@@ -1,0 +1,6 @@
+{
+  "name": "SANA",
+  "description": "Production-ready Android AI voice assistant and companion with continuous hands-free Urdu and English conversation, emotion awareness, real phone control, memory vault, and self-healing engine.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
