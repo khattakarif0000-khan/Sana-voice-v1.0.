@@ -5,6 +5,7 @@ import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Build
+import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
@@ -25,6 +26,7 @@ class SanaTextToSpeech(
     private val tag = "SanaTextToSpeech"
     private var tts: TextToSpeech? = null
     private var isInitialized = false
+    private var isUrduSupportedByEngine = false
 
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
     private var audioFocusRequest: AudioFocusRequest? = null
@@ -45,8 +47,9 @@ class SanaTextToSpeech(
         if (status == TextToSpeech.SUCCESS) {
             isInitialized = true
             setupVoiceDefaults()
+            setupAudioAttributes()
             setupProgressListener()
-            Log.d(tag, "TTS initialized successfully.")
+            Log.d(tag, "TTS initialized successfully. Urdu supported: $isUrduSupportedByEngine")
         } else {
             Log.e(tag, "TTS initialization failed with status $status")
             onSpeechError("Text-To-Speech engine failed to initialize.")
@@ -56,27 +59,41 @@ class SanaTextToSpeech(
     private fun setupVoiceDefaults() {
         val tts = tts ?: return
         try {
-            // Check for Urdu support first
             val urduLocale = Locale("ur", "PK")
             val urduResult = tts.isLanguageAvailable(urduLocale)
             if (urduResult >= TextToSpeech.LANG_AVAILABLE) {
                 tts.language = urduLocale
+                isUrduSupportedByEngine = true
             } else {
                 val urFallback = Locale("ur")
-                if (tts.isLanguageAvailable(urFallback) >= TextToSpeech.LANG_AVAILABLE) {
+                val fallbackRes = tts.isLanguageAvailable(urFallback)
+                if (fallbackRes >= TextToSpeech.LANG_AVAILABLE) {
                     tts.language = urFallback
+                    isUrduSupportedByEngine = true
                 } else {
                     tts.language = Locale.US
+                    isUrduSupportedByEngine = false
                 }
             }
 
-            // Get available voices
             val voices = tts.voices
             if (voices != null) {
                 _availableVoices.value = voices.filter { !it.isNetworkConnectionRequired }.toList()
             }
         } catch (e: Exception) {
             Log.e(tag, "Error setting up voice defaults", e)
+        }
+    }
+
+    private fun setupAudioAttributes() {
+        try {
+            val audioAttributes = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build()
+            tts?.setAudioAttributes(audioAttributes)
+        } catch (e: Exception) {
+            Log.w(tag, "Could not set audio attributes on TTS", e)
         }
     }
 
@@ -131,11 +148,17 @@ class SanaTextToSpeech(
             return
         }
 
-        // Clean formatting tags like [EMOTION: HAPPY] from speech
-        val cleanedText = cleanTextForSpeech(text)
+        var cleanedText = cleanTextForSpeech(text)
         if (cleanedText.isBlank()) {
             onSpeechDone()
             return
+        }
+
+        // If the device TTS engine does NOT support Urdu script and text is in Urdu characters,
+        // transliterate common Urdu phrases to phonetic Roman Urdu so sound ACTUALLY comes out of speaker!
+        if (!isUrduSupportedByEngine && containsUrduScript(cleanedText)) {
+            cleanedText = transliterateCommonUrdu(cleanedText)
+            tts?.language = Locale.US
         }
 
         requestAudioFocus()
@@ -144,12 +167,8 @@ class SanaTextToSpeech(
             tts?.setSpeechRate(speed.coerceIn(0.5f, 2.0f))
             tts?.setPitch(pitch.coerceIn(0.5f, 2.0f))
 
-            // Adapt language if detectable
-            if (containsUrduScript(cleanedText)) {
-                val urLocale = Locale("ur", "PK")
-                if (tts?.isLanguageAvailable(urLocale) ?: -1 >= TextToSpeech.LANG_AVAILABLE) {
-                    tts?.language = urLocale
-                }
+            if (isUrduSupportedByEngine && containsUrduScript(cleanedText)) {
+                tts?.language = Locale("ur", "PK")
             } else if (languageHint == "en") {
                 tts?.language = Locale.US
             }
@@ -157,10 +176,21 @@ class SanaTextToSpeech(
             val utteranceId = UUID.randomUUID().toString()
             activeUtteranceId = utteranceId
 
-            val params = HashMap<String, String>()
-            params[TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID] = utteranceId
-
-            tts?.speak(cleanedText, TextToSpeech.QUEUE_FLUSH, params)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                val params = Bundle().apply {
+                    putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_MUSIC)
+                    putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+                }
+                tts?.speak(cleanedText, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
+            } else {
+                @Suppress("DEPRECATION")
+                val params = HashMap<String, String>().apply {
+                    put(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
+                    put(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_MUSIC.toString())
+                }
+                @Suppress("DEPRECATION")
+                tts?.speak(cleanedText, TextToSpeech.QUEUE_FLUSH, params)
+            }
         } catch (e: Exception) {
             Log.e(tag, "TTS speak exception", e)
             abandonAudioFocus()
@@ -193,16 +223,40 @@ class SanaTextToSpeech(
     }
 
     private fun containsUrduScript(text: String): Boolean {
-        // Arabic/Urdu Unicode range: \u0600-\u06FF, \u0750-\u077F, \uFB50-\uFDFF, \uFE70-\uFEFF
         val urduPattern = Regex("[\\u0600-\\u06FF\\u0750-\\u077F\\uFB50-\\uFDFF]")
         return urduPattern.containsMatchIn(text)
+    }
+
+    /**
+     * Fallback phonetic transliteration for devices lacking an Urdu TTS voice pack
+     */
+    private fun transliterateCommonUrdu(urduText: String): String {
+        return urduText
+            .replace("السلام علیکم", "Assalam o Alaikum")
+            .replace("وعلیکم السلام", "Walaikum Assalam")
+            .replace("میں ثناء ہوں", "Main Sana hoon")
+            .replace("ثناء", "Sana")
+            .replace("شکریہ", "Shukriya")
+            .replace("ٹھیک", "theek")
+            .replace("ہوں", "hoon")
+            .replace("کیا", "kya")
+            .replace("مدد", "madad")
+            .replace("کر سکتی ہوں", "kar sakti hoon")
+            .replace("واٹس ایپ", "WhatsApp")
+            .replace("کیمرا", "camera")
+            .replace("کھول", "khol")
+            .replace("دیا ہے", "diya hai")
+            .replace("آن", "on")
+            .replace("آف", "off")
+            .replace("فلیش لائٹ", "flashlight")
+            .replace("بیٹری", "battery")
     }
 
     private fun requestAudioFocus() {
         val am = audioManager ?: return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val playbackAttributes = AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                .setUsage(AudioAttributes.USAGE_MEDIA)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build()
 

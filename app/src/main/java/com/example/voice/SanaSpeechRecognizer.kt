@@ -34,19 +34,23 @@ class SanaSpeechRecognizer(
     private var activeLanguage = "auto"
     private var isDestroyed = false
 
+    private var lastPartialText: String = ""
+    private var silenceTimeoutRunnable: Runnable? = null
+
     private val recognitionListener = object : RecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) {
             Log.d(tag, "onReadyForSpeech")
             _isListening.value = true
+            lastPartialText = ""
         }
 
         override fun onBeginningOfSpeech() {
             Log.d(tag, "onBeginningOfSpeech")
+            cancelSilenceTimeout()
             onSpeechStart()
         }
 
         override fun onRmsChanged(rmsdB: Float) {
-            // Normalize roughly between 0f and 10f
             _rmsDb.value = (rmsdB.coerceAtLeast(0f) / 10f).coerceIn(0f, 1f)
         }
 
@@ -54,25 +58,40 @@ class SanaSpeechRecognizer(
 
         override fun onEndOfSpeech() {
             Log.d(tag, "onEndOfSpeech")
+            cancelSilenceTimeout()
             _isListening.value = false
             _rmsDb.value = 0f
             onSpeechEnd()
         }
 
         override fun onError(error: Int) {
+            cancelSilenceTimeout()
             _isListening.value = false
             _rmsDb.value = 0f
+
+            // If we have captured a valid partial transcript before error, salvage it!
+            if ((error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) &&
+                lastPartialText.isNotBlank()) {
+                val salvaged = lastPartialText.trim()
+                lastPartialText = ""
+                onResult(salvaged)
+                return
+            }
+
             val message = getErrorDescription(error)
             Log.w(tag, "SpeechRecognizer error: $error - $message")
             onError(error, message)
         }
 
         override fun onResults(results: Bundle?) {
+            cancelSilenceTimeout()
             _isListening.value = false
             _rmsDb.value = 0f
             val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            val recognizedText = matches?.firstOrNull()?.trim()
-            if (!recognizedText.isNullOrBlank()) {
+            val recognizedText = matches?.firstOrNull()?.trim() ?: lastPartialText.trim()
+            lastPartialText = ""
+
+            if (recognizedText.isNotBlank()) {
                 Log.d(tag, "onResults: $recognizedText")
                 onResult(recognizedText)
             } else {
@@ -82,10 +101,14 @@ class SanaSpeechRecognizer(
 
         override fun onPartialResults(partialResults: Bundle?) {
             val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            val partial = matches?.firstOrNull()
+            val partial = matches?.firstOrNull()?.trim()
             if (!partial.isNullOrBlank()) {
-                // Detected early speech during playback
+                lastPartialText = partial
                 onSpeechStart()
+
+                // Fast response optimization: If user stops speaking after partial results,
+                // schedule quick completion rather than waiting for Android's 2-3s idle timeout
+                scheduleSilenceTimeout()
             }
         }
 
@@ -116,6 +139,8 @@ class SanaSpeechRecognizer(
     fun startListening(languageMode: String = "auto") {
         if (isDestroyed) return
         activeLanguage = languageMode
+        lastPartialText = ""
+        cancelSilenceTimeout()
 
         mainHandler.post {
             try {
@@ -128,6 +153,11 @@ class SanaSpeechRecognizer(
                     putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                     putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
 
+                    // Low-latency silence detection tuning (Prompt responsiveness)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 800L)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 600L)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 500L)
+
                     when (languageMode.lowercase()) {
                         "ur" -> {
                             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ur-PK")
@@ -138,7 +168,6 @@ class SanaSpeechRecognizer(
                             putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "en-US")
                         }
                         else -> {
-                            // Auto / Urdu / English multilingual support
                             putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toString())
                             putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", arrayOf("ur-PK", "en-US", "ur"))
                         }
@@ -154,6 +183,7 @@ class SanaSpeechRecognizer(
     }
 
     fun stopListening() {
+        cancelSilenceTimeout()
         mainHandler.post {
             try {
                 speechRecognizer?.stopListening()
@@ -166,6 +196,8 @@ class SanaSpeechRecognizer(
     }
 
     fun cancel() {
+        cancelSilenceTimeout()
+        lastPartialText = ""
         mainHandler.post {
             try {
                 speechRecognizer?.cancel()
@@ -182,7 +214,24 @@ class SanaSpeechRecognizer(
         initRecognizer()
     }
 
+    private fun scheduleSilenceTimeout() {
+        cancelSilenceTimeout()
+        silenceTimeoutRunnable = Runnable {
+            if (_isListening.value && lastPartialText.isNotBlank()) {
+                Log.d(tag, "Fast silence detected after partial speech -> finalizing")
+                stopListening()
+            }
+        }
+        mainHandler.postDelayed(silenceTimeoutRunnable!!, 1000L)
+    }
+
+    private fun cancelSilenceTimeout() {
+        silenceTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        silenceTimeoutRunnable = null
+    }
+
     private fun destroyRecognizer() {
+        cancelSilenceTimeout()
         try {
             speechRecognizer?.destroy()
             speechRecognizer = null

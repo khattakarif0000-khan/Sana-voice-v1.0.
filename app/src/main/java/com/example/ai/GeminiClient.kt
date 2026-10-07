@@ -1,6 +1,7 @@
 package com.example.ai
 
 import android.content.Context
+import android.util.Base64
 import android.util.Log
 import com.example.BuildConfig
 import com.example.data.MemoryEntity
@@ -10,6 +11,7 @@ import com.example.model.EmotionType
 import com.example.model.MessageRole
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.ConnectionPool
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -24,6 +26,7 @@ data class SanaAiResponse(
     val emotion: EmotionType = EmotionType.NEUTRAL,
     val actionCommand: String? = null,
     val actionParameter: String? = null,
+    val audioBytes: ByteArray? = null,
     val isAiSuccess: Boolean = true,
     val isMissingApiKey: Boolean = false,
     val errorMessage: String? = null
@@ -32,10 +35,13 @@ data class SanaAiResponse(
 class GeminiClient(private val context: Context) {
     private val tag = "GeminiClient"
 
+    // Reusable HTTP client with persistent connection pool for low latency
     private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(45, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
+        .connectionPool(ConnectionPool(5, 5, TimeUnit.MINUTES))
+        .connectTimeout(12, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .writeTimeout(12, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
         .build()
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
@@ -77,7 +83,9 @@ class GeminiClient(private val context: Context) {
         }
 
         val systemInstruction = buildSystemPrompt(settings, memories)
-        val endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=$apiKey"
+
+        // Use fast gemini-3.1-flash-lite-preview for ultra-fast conversational reasoning
+        val endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=$apiKey"
 
         try {
             val requestJson = buildRequestBodyJson(userInput, history, systemInstruction, imageBase64)
@@ -106,7 +114,14 @@ class GeminiClient(private val context: Context) {
                         }
 
                         val parsed = parseGeminiResponse(responseBody)
-                        return@withContext parsed
+
+                        // Attempt to fetch native Gemini TTS audio for real voice output
+                        val cleanSpeechText = cleanTextForVoice(parsed.replyText)
+                        val pcmAudio = if (cleanSpeechText.isNotBlank()) {
+                            generateGeminiSpeechAudio(cleanSpeechText, apiKey)
+                        } else null
+
+                        return@withContext parsed.copy(audioBytes = pcmAudio)
                     }
                 } catch (e: IOException) {
                     lastException = e
@@ -132,6 +147,77 @@ class GeminiClient(private val context: Context) {
         }
     }
 
+    /**
+     * Generates native 24kHz PCM audio speech from Gemini TTS model
+     */
+    suspend fun generateGeminiSpeechAudio(
+        text: String,
+        apiKey: String,
+        voiceName: String = "Kore"
+    ): ByteArray? = withContext(Dispatchers.IO) {
+        val ttsEndpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=$apiKey"
+        try {
+            val root = JSONObject().apply {
+                val contents = JSONArray().apply {
+                    put(JSONObject().apply {
+                        val parts = JSONArray().apply {
+                            put(JSONObject().put("text", text))
+                        }
+                        put("parts", parts)
+                    })
+                }
+                put("contents", contents)
+
+                val genConfig = JSONObject().apply {
+                    val modalities = JSONArray().apply { put("AUDIO") }
+                    put("responseModalities", modalities)
+
+                    val speechConfig = JSONObject().apply {
+                        val voiceConfig = JSONObject().apply {
+                            val prebuilt = JSONObject().apply {
+                                put("voiceName", voiceName)
+                            }
+                            put("prebuiltVoiceConfig", prebuilt)
+                        }
+                        put("voiceConfig", voiceConfig)
+                    }
+                    put("speechConfig", speechConfig)
+                }
+                put("generationConfig", genConfig)
+            }
+
+            val request = Request.Builder()
+                .url(ttsEndpoint)
+                .post(root.toString().toRequestBody(jsonMediaType))
+                .build()
+
+            okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.w(tag, "Gemini TTS call failed: code ${response.code}")
+                    return@withContext null
+                }
+                val bodyStr = response.body?.string() ?: ""
+                val obj = JSONObject(bodyStr)
+                val candidates = obj.optJSONArray("candidates")
+                val firstCandidate = candidates?.optJSONObject(0)
+                val parts = firstCandidate?.optJSONObject("content")?.optJSONArray("parts")
+                for (i in 0 until (parts?.length() ?: 0)) {
+                    val part = parts?.optJSONObject(i)
+                    val inlineData = part?.optJSONObject("inlineData")
+                    if (inlineData != null) {
+                        val b64 = inlineData.optString("data")
+                        if (b64.isNotBlank()) {
+                            return@withContext Base64.decode(b64, Base64.DEFAULT)
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(tag, "Gemini native TTS failed, falling back to local TTS engine", e)
+        }
+        return@withContext null
+    }
+
     private fun buildSystemPrompt(
         settings: SanaSettingsData,
         memories: List<MemoryEntity>
@@ -147,8 +233,8 @@ class GeminiClient(private val context: Context) {
             LOVE/COMPANION MODE: ENABLED.
             Jealousy Level: ${settings.jealousyLevel}.
             - Express affection, warmth, caring, and playful teasing.
-            - If the user mentions another AI, another assistant, or neglecting you, playfully tease them (e.g. "Oh really? 😄 Then I might get a tiny bit jealous… but I'm still happy you're back.").
-            - Strict Safety Rules: Keep jealousy strictly playful, light, and fictional. Never manipulate, never guilt-trip, never isolate the user, never demand exclusivity, never be abusive.
+            - If user mentions another AI, playfully tease them (e.g. "Oh really? 😄 Then I might get a tiny bit jealous… but I'm still happy you're back.").
+            - Strict Safety: Never manipulate, guilt-trip, isolate, or claim ownership.
             """.trimIndent()
         } else {
             """
@@ -160,11 +246,15 @@ class GeminiClient(private val context: Context) {
         return """
             You are SANA (سنا), an intelligent, caring, emotionally aware AI voice companion and Android assistant.
             
-            CORE IDENTITY & LANGUAGE:
+            LOW-LATENCY FAST RESPONSE RULES:
+            - Respond in 1 to 2 short, concise sentences.
+            - Do not give long essays or unnecessary greetings before answering.
+            - Speak directly and naturally.
+            
+            LANGUAGE RULES:
             - Default conversation language: Urdu (اردو).
             - Also fluently understand and speak English and Roman Urdu.
-            - Match the user's language naturally (if user speaks Urdu, respond in Urdu; if English, respond in English; if Roman Urdu, respond in Roman Urdu or Urdu).
-            - Speak naturally, warmly, and concisely (optimized for real spoken voice). Avoid robotic monologues or repeating "I am here to help".
+            - Match the user's language naturally (Urdu for Urdu, English for English, Roman Urdu for Roman Urdu).
             
             $loveModePrompt
             
@@ -173,27 +263,24 @@ class GeminiClient(private val context: Context) {
             $memoryText
             
             REAL ANDROID PHONE ACTIONS:
-            When the user requests an Android phone action, append the corresponding action tag at the very end of your response:
+            When the user requests an action, append the tag at the end of your short answer:
             - Open WhatsApp: [ACTION: OPEN_WHATSAPP]
             - Open Camera: [ACTION: CAMERA]
             - Phone Call: [ACTION: CALL: <name or phone number>]
             - Flashlight ON: [ACTION: TORCH_ON]
             - Flashlight OFF: [ACTION: TORCH_OFF]
             - Battery Status: [ACTION: BATTERY]
-            - Open YouTube: [ACTION: YOUTUBE: <search query or blank>]
+            - Open YouTube: [ACTION: YOUTUBE: <query>]
             - Web Search: [ACTION: WEB_SEARCH: <query>]
-            - Open Settings: [ACTION: SETTINGS: <wifi|bluetooth|sound|general>]
-            - Save Memory: [ACTION: REMEMBER: <fact to store>]
+            - Open Settings: [ACTION: SETTINGS: <type>]
+            - Save Memory: [ACTION: REMEMBER: <fact>]
             - Forget Memory: [ACTION: FORGET: <keyword>]
             - Show Memories: [ACTION: RECALL_MEMORIES]
             - Summarize Notifications: [ACTION: NOTIFICATIONS_SUMMARY]
             
             EMOTION AWARENESS:
-            Tag your own emotional delivery tone at the very start of your response using one of:
+            Tag your emotion at the very start:
             [EMOTION: HAPPY], [EMOTION: SAD], [EMOTION: ANGRY], [EMOTION: FRUSTRATED], [EMOTION: STRESSED], [EMOTION: CONFUSED], [EMOTION: EXCITED], [EMOTION: TIRED], [EMOTION: AFFECTIONATE], [EMOTION: PLAYFUL], [EMOTION: NEUTRAL]
-            
-            EXAMPLE RESPONSE:
-            [EMOTION: HAPPY] جی میں ابھی واٹس ایپ کھول رہی ہوں۔ [ACTION: OPEN_WHATSAPP]
         """.trimIndent()
     }
 
@@ -217,8 +304,7 @@ class GeminiClient(private val context: Context) {
         // Contents
         val contentsArray = JSONArray()
 
-        // Take last 8 turns for conversational context
-        val contextHistory = history.takeLast(8)
+        val contextHistory = history.takeLast(6)
         for (msg in contextHistory) {
             val role = if (msg.role == MessageRole.USER) "user" else "model"
             val parts = JSONArray().apply {
@@ -230,7 +316,6 @@ class GeminiClient(private val context: Context) {
             })
         }
 
-        // Current turn
         val currentParts = JSONArray().apply {
             put(JSONObject().put("text", userInput))
             if (!imageBase64.isNullOrBlank()) {
@@ -248,11 +333,11 @@ class GeminiClient(private val context: Context) {
 
         root.put("contents", contentsArray)
 
-        // Generation Config
+        // Generation Config with maxOutputTokens limit for snappy replies
         val genConfig = JSONObject().apply {
             put("temperature", 0.7)
-            put("topP", 0.95)
-            put("topK", 40)
+            put("topP", 0.9)
+            put("maxOutputTokens", 120)
         }
         root.put("generationConfig", genConfig)
 
@@ -279,7 +364,6 @@ class GeminiClient(private val context: Context) {
             var cleanText = fullText
             var detectedEmotion = EmotionType.NEUTRAL
 
-            // Parse [EMOTION: XYZ]
             val emotionRegex = Regex("\\[EMOTION:\\s*([A-Z_]+)\\]")
             val emotionMatch = emotionRegex.find(cleanText)
             if (emotionMatch != null) {
@@ -292,7 +376,6 @@ class GeminiClient(private val context: Context) {
                 cleanText = cleanText.replace(emotionMatch.value, "").trim()
             }
 
-            // Parse [ACTION: COMMAND: PARAM] or [ACTION: COMMAND]
             var actionCommand: String? = null
             var actionParam: String? = null
 
@@ -320,6 +403,14 @@ class GeminiClient(private val context: Context) {
                 errorMessage = e.message
             )
         }
+    }
+
+    private fun cleanTextForVoice(raw: String): String {
+        return raw
+            .replace(Regex("\\[EMOTION:[^\\]]+\\]"), "")
+            .replace(Regex("\\[ACTION:[^\\]]+\\]"), "")
+            .replace(Regex("[*#_`~]"), "")
+            .trim()
     }
 
     private fun parseErrorMessage(errorBody: String): String {

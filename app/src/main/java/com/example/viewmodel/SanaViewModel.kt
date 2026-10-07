@@ -22,6 +22,7 @@ import com.example.model.MessageRole
 import com.example.phone.PhoneControlManager
 import com.example.service.SanaNotificationListenerService
 import com.example.service.SanaVoiceService
+import com.example.voice.SanaAudioTrackPlayer
 import com.example.voice.SanaSpeechRecognizer
 import com.example.voice.SanaTextToSpeech
 import kotlinx.coroutines.Job
@@ -68,8 +69,9 @@ class SanaViewModel(application: Application) : AndroidViewModel(application) {
     private val _audioWaveLevel = MutableStateFlow(0f)
     val audioWaveLevel: StateFlow<Float> = _audioWaveLevel.asStateFlow()
 
-    // Voice Engine
+    // Dual-Layer Voice Engine: Gemini Native AudioTrack + Local TTS Fallback
     private var speechRecognizer: SanaSpeechRecognizer? = null
+    private var audioTrackPlayer: SanaAudioTrackPlayer? = null
     private var textToSpeech: SanaTextToSpeech? = null
 
     // Self-healing retry backoff
@@ -81,7 +83,7 @@ class SanaViewModel(application: Application) : AndroidViewModel(application) {
         initVoiceEngines()
         updateDiagnostics()
 
-        // Welcome message
+        // Initial welcome message
         _messages.value = listOf(
             ChatMessage(
                 role = MessageRole.SANA,
@@ -109,7 +111,7 @@ class SanaViewModel(application: Application) : AndroidViewModel(application) {
                 handleSpeechError(code, desc)
             },
             onSpeechStart = {
-                // If SANA is currently speaking and user speaks, trigger natural interruption!
+                // If SANA is currently speaking and user speaks, trigger immediate natural interruption!
                 if (_conversationState.value == ConversationState.SPEAKING) {
                     handleUserInterruption()
                 } else if (_conversationState.value == ConversationState.LISTENING) {
@@ -121,7 +123,7 @@ class SanaViewModel(application: Application) : AndroidViewModel(application) {
             }
         )
 
-        // Observe RMS amplitude
+        // Observe RMS amplitude from real mic
         viewModelScope.launch {
             speechRecognizer?.rmsDb?.collect { rms ->
                 if (_conversationState.value == ConversationState.LISTENING) {
@@ -130,21 +132,44 @@ class SanaViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
+        // Primary: Native 24kHz Gemini AudioTrack Player
+        audioTrackPlayer = SanaAudioTrackPlayer(
+            context = context,
+            onPlaybackStarted = {
+                _conversationState.value = ConversationState.SPEAKING
+                _diagnosticStatus.value = _diagnosticStatus.value.copy(ttsReady = true)
+                _audioWaveLevel.value = 0.65f
+            },
+            onPlaybackFinished = {
+                _audioWaveLevel.value = 0f
+                handleAudioFinished()
+            },
+            onPlaybackError = { errorMsg ->
+                Log.w(tag, "AudioTrack error: $errorMsg, falling back to TTS")
+                _audioWaveLevel.value = 0f
+                handleAudioFinished()
+            }
+        )
+
+        // Secondary / Fallback: Android TextToSpeech engine
         textToSpeech = SanaTextToSpeech(
             context = context,
             onSpeechStarted = {
                 _conversationState.value = ConversationState.SPEAKING
                 _diagnosticStatus.value = _diagnosticStatus.value.copy(ttsReady = true)
+                _audioWaveLevel.value = 0.55f
             },
             onSpeechDone = {
-                handleTtsFinished()
+                _audioWaveLevel.value = 0f
+                handleAudioFinished()
             },
             onSpeechError = { errorMsg ->
                 Log.e(tag, "TTS error: $errorMsg")
+                _audioWaveLevel.value = 0f
                 _diagnosticStatus.value = _diagnosticStatus.value.copy(
                     lastError = "TTS: $errorMsg"
                 )
-                handleTtsFinished()
+                handleAudioFinished()
             }
         )
     }
@@ -184,14 +209,14 @@ class SanaViewModel(application: Application) : AndroidViewModel(application) {
         _isHandsFreeActive.value = false
         recoveryJob?.cancel()
         speechRecognizer?.stopListening()
+        audioTrackPlayer?.stop()
         textToSpeech?.stop()
         _conversationState.value = ConversationState.STOPPED
         _audioWaveLevel.value = 0f
         SanaVoiceService.stop(context)
 
-        // Transition back to IDLE after a moment
         viewModelScope.launch {
-            delay(600)
+            delay(500)
             if (!_isHandsFreeActive.value) {
                 _conversationState.value = ConversationState.IDLE
             }
@@ -210,12 +235,14 @@ class SanaViewModel(application: Application) : AndroidViewModel(application) {
      * Natural Interruption: User spoke while SANA was speaking
      */
     private fun handleUserInterruption() {
-        Log.d(tag, "Natural Interruption triggered!")
+        Log.d(tag, "Natural Interruption triggered -> stopping audio output instantly")
         _conversationState.value = ConversationState.INTERRUPTED
+        audioTrackPlayer?.stop()
         textToSpeech?.stop()
+        _audioWaveLevel.value = 0f
 
         viewModelScope.launch {
-            delay(100)
+            delay(80)
             if (_isHandsFreeActive.value) {
                 _conversationState.value = ConversationState.LISTENING
                 speechRecognizer?.startListening(settings.value.languageMode)
@@ -224,7 +251,7 @@ class SanaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Speech-to-text received final speech string
+     * Speech-to-text received final speech string from user
      */
     private fun handleSpeechRecognized(text: String) {
         if (text.isBlank()) {
@@ -235,7 +262,6 @@ class SanaViewModel(application: Application) : AndroidViewModel(application) {
         consecutiveErrors = 0
         _conversationState.value = ConversationState.PROCESSING
 
-        // Append User Message
         val userMsg = ChatMessage(
             role = MessageRole.USER,
             text = text
@@ -246,7 +272,7 @@ class SanaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Main reasoning and action pipeline
+     * Fast reasoning and action pipeline
      */
     fun processUserInput(text: String, imageBase64: String? = null) {
         viewModelScope.launch {
@@ -262,12 +288,13 @@ class SanaViewModel(application: Application) : AndroidViewModel(application) {
                     command = localMatch.command,
                     param = localMatch.parameter,
                     replyText = "${localMatch.spokenResponse ?: "Action executed."} (Note: AI brain key not configured)",
-                    emotion = localMatch.emotion
+                    emotion = localMatch.emotion,
+                    audioBytes = null
                 )
                 return@launch
             }
 
-            // Call Gemini Brain
+            // Call Gemini Brain (fast concise generation)
             val aiResponse = geminiClient.generateResponse(
                 userInput = text,
                 history = _messages.value,
@@ -278,17 +305,22 @@ class SanaViewModel(application: Application) : AndroidViewModel(application) {
 
             _currentEmotion.value = aiResponse.emotion
 
-            // Check if action execution is requested
+            // Check if phone control action execution is requested
             if (aiResponse.actionCommand != null) {
                 executeActionAndReply(
                     command = aiResponse.actionCommand,
                     param = aiResponse.actionParameter,
                     replyText = aiResponse.replyText,
-                    emotion = aiResponse.emotion
+                    emotion = aiResponse.emotion,
+                    audioBytes = aiResponse.audioBytes
                 )
             } else {
-                // Regular voice reply
-                deliverSanaReply(aiResponse.replyText, aiResponse.emotion)
+                // Direct audible reply
+                deliverSanaReply(
+                    speechText = aiResponse.replyText,
+                    emotion = aiResponse.emotion,
+                    audioBytes = aiResponse.audioBytes
+                )
             }
         }
     }
@@ -300,7 +332,8 @@ class SanaViewModel(application: Application) : AndroidViewModel(application) {
         command: String?,
         param: String?,
         replyText: String,
-        emotion: EmotionType
+        emotion: EmotionType,
+        audioBytes: ByteArray?
     ) {
         var actionResult: ActionResult? = null
 
@@ -357,17 +390,16 @@ class SanaViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     "آپ کی یادداشتیں:\n" + list.joinToString("\n") { it.content }
                 }
-                deliverSanaReply(memoryListText, EmotionType.HAPPY)
+                deliverSanaReply(memoryListText, EmotionType.HAPPY, audioBytes = null)
                 return
             }
             "NOTIFICATIONS_SUMMARY" -> {
                 val summary = SanaNotificationListenerService.getSummary()
-                deliverSanaReply(summary, EmotionType.HAPPY)
+                deliverSanaReply(summary, EmotionType.HAPPY, audioBytes = null)
                 return
             }
         }
 
-        // Combine action verification with verbal reply
         val finalSpeechText = if (actionResult != null && !actionResult.success) {
             "$replyText (${actionResult.detail})"
         } else {
@@ -377,14 +409,19 @@ class SanaViewModel(application: Application) : AndroidViewModel(application) {
         deliverSanaReply(
             speechText = finalSpeechText,
             emotion = emotion,
-            actionResult = actionResult
+            actionResult = actionResult,
+            audioBytes = audioBytes
         )
     }
 
+    /**
+     * Primary speech delivery: Real Gemini 24kHz audio through AudioTrack, or TTS fallback
+     */
     private fun deliverSanaReply(
         speechText: String,
         emotion: EmotionType,
-        actionResult: ActionResult? = null
+        actionResult: ActionResult? = null,
+        audioBytes: ByteArray? = null
     ) {
         _currentEmotion.value = emotion
 
@@ -396,29 +433,37 @@ class SanaViewModel(application: Application) : AndroidViewModel(application) {
             isActionVerified = actionResult?.verified ?: false
         )
         _messages.value = _messages.value + sanaMsg
-
-        // Real TTS Speech
         _conversationState.value = ConversationState.SPEAKING
-        textToSpeech?.speak(
-            text = speechText,
-            speed = settings.value.ttsSpeed,
-            pitch = settings.value.ttsPitch,
-            languageHint = settings.value.languageMode
-        )
+
+        // Priority 1: Real native Gemini PCM audio output through phone speaker
+        if (audioBytes != null && audioBytes.isNotEmpty()) {
+            Log.d(tag, "Playing real Gemini PCM audio through phone speaker (${audioBytes.size} bytes)")
+            audioTrackPlayer?.playPcmAudio(audioBytes)
+        } else {
+            // Priority 2: Android Text-To-Speech engine fallback
+            Log.d(tag, "Playing speech through local Android TextToSpeech engine")
+            textToSpeech?.speak(
+                text = speechText,
+                speed = settings.value.ttsSpeed,
+                pitch = settings.value.ttsPitch,
+                languageHint = settings.value.languageMode
+            )
+        }
     }
 
     /**
-     * Called when TTS finished speaking. If hands-free is active, automatically listen again!
+     * Called when audio finishes playing through phone speaker.
+     * When hands-free is active, automatically listen again!
      */
-    private fun handleTtsFinished() {
+    private fun handleAudioFinished() {
         if (!_isHandsFreeActive.value) {
             _conversationState.value = ConversationState.IDLE
             return
         }
 
-        // Hands-free loop continues automatically!
+        // Automatic hands-free re-listen loop!
         viewModelScope.launch {
-            delay(250) // brief natural pause
+            delay(200) // Natural conversational pause
             if (_isHandsFreeActive.value) {
                 startListeningLoop()
             }
@@ -445,7 +490,7 @@ class SanaViewModel(application: Application) : AndroidViewModel(application) {
         if (errorCode == android.speech.SpeechRecognizer.ERROR_NO_MATCH ||
             errorCode == android.speech.SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
             viewModelScope.launch {
-                delay(300)
+                delay(250)
                 if (_isHandsFreeActive.value) {
                     startListeningLoop()
                 }
@@ -453,7 +498,7 @@ class SanaViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        // More severe error: trigger Self-Healing
+        // Severe error: trigger Self-Healing with backoff
         _conversationState.value = ConversationState.RECOVERING
         _diagnosticStatus.value = _diagnosticStatus.value.copy(
             recoveryAttempt = consecutiveErrors
@@ -461,12 +506,12 @@ class SanaViewModel(application: Application) : AndroidViewModel(application) {
 
         recoveryJob?.cancel()
         recoveryJob = viewModelScope.launch {
-            val backoffMs = (500L * consecutiveErrors).coerceAtMost(3000L)
+            val backoffMs = (400L * consecutiveErrors).coerceAtMost(2500L)
             delay(backoffMs)
 
             if (_isHandsFreeActive.value) {
                 speechRecognizer?.restart()
-                delay(200)
+                delay(150)
                 startListeningLoop()
             }
         }
@@ -496,7 +541,7 @@ class SanaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // -------------------------------------------------------------
-    // Settings Updates
+    // Settings & Audition
     // -------------------------------------------------------------
 
     fun updateSettings(newSettings: SanaSettingsData) {
@@ -509,12 +554,24 @@ class SanaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun testVoiceAudition() {
-        textToSpeech?.speak(
-            text = "جی میں ثناء ہوں۔ میری آواز کی رفتار اور لہجہ اس طرح سنائی دے گا۔",
-            speed = settings.value.ttsSpeed,
-            pitch = settings.value.ttsPitch,
-            languageHint = "ur"
-        )
+        val apiKey = geminiClient.getEffectiveApiKey(settings.value.customApiKey)
+        viewModelScope.launch {
+            if (apiKey.isNotBlank()) {
+                val sampleText = "السلام علیکم! میں ثناء ہوں۔ میری آواز اس طرح سنائی دے گی۔"
+                val audio = geminiClient.generateGeminiSpeechAudio(sampleText, apiKey)
+                if (audio != null) {
+                    audioTrackPlayer?.playPcmAudio(audio)
+                    return@launch
+                }
+            }
+            // Fallback to local TTS
+            textToSpeech?.speak(
+                text = "جی میں ثناء ہوں۔ میری آواز کی رفتار اور لہجہ اس طرح سنائی دے گا۔",
+                speed = settings.value.ttsSpeed,
+                pitch = settings.value.ttsPitch,
+                languageHint = "ur"
+            )
+        }
     }
 
     fun clearChat() {
@@ -527,7 +584,7 @@ class SanaViewModel(application: Application) : AndroidViewModel(application) {
 
         _diagnosticStatus.value = _diagnosticStatus.value.copy(
             micReady = speechRecognizer != null,
-            ttsReady = textToSpeech?.isReady() == true,
+            ttsReady = (audioTrackPlayer != null || textToSpeech?.isReady() == true),
             aiConfigured = apiKey.isNotBlank(),
             batteryPct = battery.detail.filter { it.isDigit() }.toIntOrNull() ?: 100
         )
@@ -536,6 +593,7 @@ class SanaViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         super.onCleared()
         speechRecognizer?.destroy()
+        audioTrackPlayer?.destroy()
         textToSpeech?.destroy()
     }
 }
