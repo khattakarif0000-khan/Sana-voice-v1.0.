@@ -52,7 +52,7 @@ data class ActionResult(
 
 data class DiagnosticStatus(
     val micReady: Boolean = false,
-    val ttsReady: Boolean = false,
+    val geminiVoiceReady: Boolean = false,
     val aiConfigured: Boolean = false,
     val networkAvailable: Boolean = true,
     val audioFocusGranted: Boolean = false,

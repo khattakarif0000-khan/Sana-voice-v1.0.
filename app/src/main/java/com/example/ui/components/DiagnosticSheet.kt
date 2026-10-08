@@ -100,9 +100,9 @@ fun DiagnosticSheet(
                     detail = if (status.aiConfigured) "Configured & Active" else "API Key Missing / Not Provided"
                 )
                 DiagnosticRow(
-                    name = "Text-to-Speech Engine",
-                    isHealthy = status.ttsReady,
-                    detail = if (status.ttsReady) "Ready (Urdu & English voice installed)" else "Initializing TTS..."
+                    name = "Gemini Native Voice Output",
+                    isHealthy = status.geminiVoiceReady,
+                    detail = if (status.geminiVoiceReady) "24kHz AudioTrack Speaker Ready" else "Audio engine ready"
                 )
                 DiagnosticRow(
                     name = "Network Connectivity",
