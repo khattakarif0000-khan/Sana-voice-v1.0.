@@ -3,7 +3,7 @@ package com.example.model
 enum class ConversationState(val displayName: String) {
     IDLE("Ready"),
     LISTENING("Listening..."),
-    PROCESSING("Thinking..."),
+    PROCESSING("Active"),
     SPEAKING("Speaking"),
     INTERRUPTED("Interrupted"),
     RECOVERING("Self-Healing..."),

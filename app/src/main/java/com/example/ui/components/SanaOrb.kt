@@ -105,8 +105,6 @@ fun SanaOrb(
             // Audio reaction factor
             val dynamicScale = if (state == ConversationState.LISTENING || state == ConversationState.SPEAKING) {
                 1.0f + (audioLevel * 0.45f)
-            } else if (state == ConversationState.PROCESSING) {
-                1.0f + (sin(rotation * PI.toFloat() / 180f) * 0.1f)
             } else {
                 breathing
             }

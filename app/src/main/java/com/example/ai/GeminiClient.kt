@@ -351,7 +351,17 @@ class GeminiClient(private val context: Context) {
             val firstCandidate = candidates?.optJSONObject(0)
             val content = firstCandidate?.optJSONObject("content")
             val parts = content?.optJSONArray("parts")
-            val fullText = parts?.optJSONObject(0)?.optString("text", "") ?: ""
+            var fullText = ""
+            for (i in 0 until (parts?.length() ?: 0)) {
+                val p = parts?.optJSONObject(i)
+                val isThought = p?.optBoolean("thought", false) ?: false
+                if (!isThought) {
+                    val t = p?.optString("text", "") ?: ""
+                    if (t.isNotBlank()) {
+                        fullText = if (fullText.isEmpty()) t else "$fullText\n$t"
+                    }
+                }
+            }
 
             if (fullText.isBlank()) {
                 return SanaAiResponse(
@@ -362,6 +372,9 @@ class GeminiClient(private val context: Context) {
             }
 
             var cleanText = fullText
+                .replace(Regex("(?s)<thought>.*?</thought>"), "")
+                .replace(Regex("(?s)<thinking>.*?</thinking>"), "")
+                .trim()
             var detectedEmotion = EmotionType.NEUTRAL
 
             val emotionRegex = Regex("\\[EMOTION:\\s*([A-Z_]+)\\]")
