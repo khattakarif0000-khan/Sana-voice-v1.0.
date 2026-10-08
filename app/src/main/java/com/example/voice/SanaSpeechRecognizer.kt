@@ -2,8 +2,6 @@ package com.example.voice
 
 import android.content.Context
 import android.content.Intent
-import android.media.AudioManager
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -25,7 +23,6 @@ class SanaSpeechRecognizer(
     private val onSpeechEnd: () -> Unit
 ) {
     private val tag = "SanaSpeechRecognizer"
-    private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
     private var speechRecognizer: SpeechRecognizer? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -37,83 +34,39 @@ class SanaSpeechRecognizer(
 
     private var activeLanguage = "auto"
     private var isDestroyed = false
-
-    // State tracking for Voice Activity Detection (VAD)
-    private var isSpeechActive = false
-    private var lastSpeechTime = 0L
     private var lastPartialText: String = ""
-
-    // VAD silence checking runnable
-    private var vadCheckerRunnable: Runnable? = null
-    private var maxSpeechTimeoutRunnable: Runnable? = null
-
-    // Volume state to silence system recognizer beep
-    private var originalSystemVolume: Int = -1
-    private var originalNotificationVolume: Int = -1
-    private var isBeepSuppressed = false
 
     private val recognitionListener = object : RecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) {
-            Log.d(tag, "onReadyForSpeech -> ready for user audio")
+            Log.d(tag, "onReadyForSpeech")
             _isListening.value = true
-            isSpeechActive = false
-            lastSpeechTime = 0L
             lastPartialText = ""
-
-            // Restore audio volume after recognizer has initialized silently
-            restoreBeepVolume()
-
-            // Safety max duration: never record endlessly (max 12s)
-            startMaxSpeechSafetyTimeout()
         }
 
         override fun onBeginningOfSpeech() {
             Log.d(tag, "onBeginningOfSpeech -> user started talking")
-            isSpeechActive = true
-            lastSpeechTime = System.currentTimeMillis()
             onSpeechStart()
-            startVadSilenceWatcher()
         }
 
         override fun onRmsChanged(rmsdB: Float) {
             val normalized = (rmsdB.coerceAtLeast(0f) / 10f).coerceIn(0f, 1f)
             _rmsDb.value = normalized
-
-            // If audio energy indicates speech (> 1.8 dB)
-            if (rmsdB > 1.8f) {
-                if (!isSpeechActive) {
-                    isSpeechActive = true
-                    onSpeechStart()
-                    startVadSilenceWatcher()
-                }
-                lastSpeechTime = System.currentTimeMillis()
-            }
         }
 
         override fun onBufferReceived(buffer: ByteArray?) {}
 
         override fun onEndOfSpeech() {
-            Log.d(tag, "onEndOfSpeech -> Android detected speech stop")
-            stopVadWatchers()
+            Log.d(tag, "onEndOfSpeech -> speech ended")
             _isListening.value = false
             _rmsDb.value = 0f
             onSpeechEnd()
-
-            // Stop input recording immediately to prevent endless listening
-            try {
-                speechRecognizer?.stopListening()
-            } catch (e: Exception) {
-                Log.w(tag, "Error in onEndOfSpeech stopListening", e)
-            }
         }
 
         override fun onError(error: Int) {
-            stopVadWatchers()
-            restoreBeepVolume()
             _isListening.value = false
             _rmsDb.value = 0f
 
-            // If we captured valid speech before error, deliver it!
+            // If we captured valid partial speech before timeout/error, deliver it
             if ((error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) &&
                 lastPartialText.isNotBlank()) {
                 val text = lastPartialText.trim()
@@ -122,9 +75,9 @@ class SanaSpeechRecognizer(
                 return
             }
 
-            // Silent timeout / no match -> handle calmly without rapid beep loop
+            // Normal silence / timeout
             if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
-                Log.d(tag, "No speech heard during session.")
+                Log.d(tag, "SpeechRecognizer: silence/timeout ($error)")
                 onNoSpeechDetected()
                 return
             }
@@ -135,8 +88,6 @@ class SanaSpeechRecognizer(
         }
 
         override fun onResults(results: Bundle?) {
-            stopVadWatchers()
-            restoreBeepVolume()
             _isListening.value = false
             _rmsDb.value = 0f
 
@@ -145,7 +96,7 @@ class SanaSpeechRecognizer(
             lastPartialText = ""
 
             if (recognizedText.isNotBlank()) {
-                Log.d(tag, "Speech finalized: $recognizedText")
+                Log.d(tag, "Speech recognized: $recognizedText")
                 onResult(recognizedText)
             } else {
                 onNoSpeechDetected()
@@ -157,10 +108,7 @@ class SanaSpeechRecognizer(
             val partial = matches?.firstOrNull()?.trim()
             if (!partial.isNullOrBlank()) {
                 lastPartialText = partial
-                isSpeechActive = true
-                lastSpeechTime = System.currentTimeMillis()
                 onSpeechStart()
-                startVadSilenceWatcher()
             }
         }
 
@@ -189,14 +137,12 @@ class SanaSpeechRecognizer(
     }
 
     /**
-     * Starts listening with system beep suppression
+     * Starts listening. Always cleans up any previous session first to ensure only 1 session exists.
      */
     fun startListening(languageMode: String = "auto") {
         if (isDestroyed) return
         activeLanguage = languageMode
         lastPartialText = ""
-        isSpeechActive = false
-        lastSpeechTime = 0L
 
         mainHandler.post {
             try {
@@ -204,17 +150,14 @@ class SanaSpeechRecognizer(
                     initRecognizer()
                 }
 
-                // Suppress recognizer start "tut-tut" sound
-                suppressBeepVolume()
-
                 val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                     putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                     putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
 
                     // Prompt silence thresholds
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 750L)
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 600L)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 900L)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 750L)
                     putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 500L)
 
                     when (languageMode.lowercase()) {
@@ -235,18 +178,13 @@ class SanaSpeechRecognizer(
 
                 speechRecognizer?.startListening(intent)
             } catch (e: Exception) {
-                restoreBeepVolume()
                 Log.e(tag, "startListening error", e)
                 onError(-1, e.message ?: "Failed to start speech recognition")
             }
         }
     }
 
-    /**
-     * Stop input promptly
-     */
     fun stopListening() {
-        stopVadWatchers()
         mainHandler.post {
             try {
                 speechRecognizer?.stopListening()
@@ -259,8 +197,6 @@ class SanaSpeechRecognizer(
     }
 
     fun cancel() {
-        stopVadWatchers()
-        restoreBeepVolume()
         lastPartialText = ""
         mainHandler.post {
             try {
@@ -273,107 +209,7 @@ class SanaSpeechRecognizer(
         }
     }
 
-    /**
-     * Voice Activity Detection Watcher:
-     * When user speaks and then goes silent for 750ms -> STOP INPUT immediately!
-     */
-    private fun startVadSilenceWatcher() {
-        if (vadCheckerRunnable != null) return
-
-        vadCheckerRunnable = object : Runnable {
-            override fun run() {
-                if (_isListening.value && isSpeechActive) {
-                    val silenceDuration = System.currentTimeMillis() - lastSpeechTime
-                    if (silenceDuration >= 750L) {
-                        Log.d(tag, "VAD: User finished speaking ($silenceDuration ms silence) -> STOPPING INPUT")
-                        stopVadWatchers()
-                        stopListening()
-                        return
-                    }
-                }
-                if (_isListening.value) {
-                    mainHandler.postDelayed(this, 150L)
-                }
-            }
-        }
-        mainHandler.postDelayed(vadCheckerRunnable!!, 150L)
-    }
-
-    /**
-     * Hard safety cap: Never allow recording to exceed 12 seconds continuously
-     */
-    private fun startMaxSpeechSafetyTimeout() {
-        cancelMaxSpeechTimeout()
-        maxSpeechTimeoutRunnable = Runnable {
-            if (_isListening.value) {
-                Log.d(tag, "Max speech safety timeout reached (12s) -> finalizing input")
-                stopVadWatchers()
-                stopListening()
-            }
-        }
-        mainHandler.postDelayed(maxSpeechTimeoutRunnable!!, 12000L)
-    }
-
-    private fun cancelMaxSpeechTimeout() {
-        maxSpeechTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
-        maxSpeechTimeoutRunnable = null
-    }
-
-    private fun stopVadWatchers() {
-        vadCheckerRunnable?.let { mainHandler.removeCallbacks(it) }
-        vadCheckerRunnable = null
-        cancelMaxSpeechTimeout()
-    }
-
-    /**
-     * Temporarily mute STREAM_SYSTEM and STREAM_NOTIFICATION to eliminate recognizer tut-tut/beep
-     */
-    private fun suppressBeepVolume() {
-        try {
-            val am = audioManager ?: return
-            if (!isBeepSuppressed) {
-                originalSystemVolume = am.getStreamVolume(AudioManager.STREAM_SYSTEM)
-                originalNotificationVolume = am.getStreamVolume(AudioManager.STREAM_NOTIFICATION)
-
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    am.adjustStreamVolume(AudioManager.STREAM_SYSTEM, AudioManager.ADJUST_MUTE, 0)
-                    am.adjustStreamVolume(AudioManager.STREAM_NOTIFICATION, AudioManager.ADJUST_MUTE, 0)
-                } else {
-                    @Suppress("DEPRECATION")
-                    am.setStreamMute(AudioManager.STREAM_SYSTEM, true)
-                    @Suppress("DEPRECATION")
-                    am.setStreamMute(AudioManager.STREAM_NOTIFICATION, true)
-                }
-                isBeepSuppressed = true
-            }
-        } catch (e: Exception) {
-            Log.w(tag, "Could not suppress recognizer beep", e)
-        }
-    }
-
-    private fun restoreBeepVolume() {
-        try {
-            val am = audioManager ?: return
-            if (isBeepSuppressed) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    am.adjustStreamVolume(AudioManager.STREAM_SYSTEM, AudioManager.ADJUST_UNMUTE, 0)
-                    am.adjustStreamVolume(AudioManager.STREAM_NOTIFICATION, AudioManager.ADJUST_UNMUTE, 0)
-                } else {
-                    @Suppress("DEPRECATION")
-                    am.setStreamMute(AudioManager.STREAM_SYSTEM, false)
-                    @Suppress("DEPRECATION")
-                    am.setStreamMute(AudioManager.STREAM_NOTIFICATION, false)
-                }
-                isBeepSuppressed = false
-            }
-        } catch (e: Exception) {
-            Log.w(tag, "Could not restore volume", e)
-        }
-    }
-
     private fun destroyRecognizerInternal() {
-        stopVadWatchers()
-        restoreBeepVolume()
         try {
             speechRecognizer?.destroy()
             speechRecognizer = null

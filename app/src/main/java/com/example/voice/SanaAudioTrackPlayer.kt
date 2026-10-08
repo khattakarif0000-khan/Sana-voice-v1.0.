@@ -44,20 +44,28 @@ class SanaAudioTrackPlayer(
     }
 
     /**
-     * Plays raw PCM (24kHz 16-bit Mono) through the device speaker.
+     * Plays PCM audio through the Android device speaker without premature cutoff.
+     * Automatically extracts PCM data from WAV RIFF containers if present.
      */
-    fun playPcmAudio(pcmData: ByteArray) {
-        if (pcmData.isEmpty()) {
+    fun playPcmAudio(audioData: ByteArray) {
+        if (audioData.isEmpty()) {
             onPlaybackFinished()
             return
         }
 
-        // Cancel any active playback
+        // Stop any active session cleanly first
         stop()
         isInterrupted.set(false)
 
         playbackJob = scope.launch {
             try {
+                // Extract raw PCM payload (strip WAV header if present)
+                val pcmBytes = extractPcmBytes(audioData)
+                if (pcmBytes.isEmpty()) {
+                    onPlaybackFinished()
+                    return@launch
+                }
+
                 requestAudioFocus()
 
                 val minBufferSize = AudioTrack.getMinBufferSize(
@@ -65,7 +73,7 @@ class SanaAudioTrackPlayer(
                     CHANNEL_CONFIG,
                     AUDIO_FORMAT
                 )
-                val bufferSize = maxOf(minBufferSize * 2, 4096)
+                val bufferSize = maxOf(minBufferSize * 4, 8192)
 
                 val audioAttributes = AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -94,9 +102,9 @@ class SanaAudioTrackPlayer(
                 val chunkSize = 2048
                 var offset = 0
 
-                while (offset < pcmData.size && !isInterrupted.get()) {
-                    val bytesToWrite = minOf(chunkSize, pcmData.size - offset)
-                    val written = track.write(pcmData, offset, bytesToWrite)
+                while (offset < pcmBytes.size && !isInterrupted.get()) {
+                    val bytesToWrite = minOf(chunkSize, pcmBytes.size - offset)
+                    val written = track.write(pcmBytes, offset, bytesToWrite)
                     if (written < 0) {
                         Log.e(tag, "AudioTrack write error: $written")
                         break
@@ -105,10 +113,10 @@ class SanaAudioTrackPlayer(
                 }
 
                 if (!isInterrupted.get()) {
-                    // Calculate remaining audio duration based on sample rate to let buffer drain
-                    val remainingMs = ((pcmData.size.toFloat() / (SAMPLE_RATE_HZ * BYTES_PER_SAMPLE)) * 1000L).toLong()
-                    val waitMs = minOf(remainingMs, 500L) // Small safety wait for buffer completion
-                    delay(waitMs)
+                    // Calculate TRUE audio duration: total bytes / (24000 samples/sec * 2 bytes/sample)
+                    val totalDurationMs = ((pcmBytes.size.toDouble() / (SAMPLE_RATE_HZ * BYTES_PER_SAMPLE)) * 1000.0).toLong()
+                    // Allow the complete audio to finish playing through the speaker
+                    delay(totalDurationMs + 100L)
                 }
 
                 releaseTrackSafely(track)
@@ -128,7 +136,31 @@ class SanaAudioTrackPlayer(
     }
 
     /**
-     * Instantly halt audio playback on user speech / interruption
+     * Extracts raw PCM payload from byte stream, stripping standard 44-byte WAV header if present
+     */
+    private fun extractPcmBytes(data: ByteArray): ByteArray {
+        if (data.size > 44 && data[0] == 'R'.code.toByte() && data[1] == 'I'.code.toByte() && data[2] == 'F'.code.toByte() && data[3] == 'F'.code.toByte()) {
+            val dataOffset = findDataChunkOffset(data)
+            return if (dataOffset != -1 && dataOffset + 8 < data.size) {
+                data.copyOfRange(dataOffset + 8, data.size)
+            } else {
+                data.copyOfRange(44, data.size)
+            }
+        }
+        return data
+    }
+
+    private fun findDataChunkOffset(data: ByteArray): Int {
+        for (i in 12 until (data.size - 4)) {
+            if (data[i] == 'd'.code.toByte() && data[i + 1] == 'a'.code.toByte() && data[i + 2] == 't'.code.toByte() && data[i + 3] == 'a'.code.toByte()) {
+                return i
+            }
+        }
+        return -1
+    }
+
+    /**
+     * Instantly halt audio playback on user speech / interruption / STOP
      */
     fun stop() {
         isInterrupted.set(true)

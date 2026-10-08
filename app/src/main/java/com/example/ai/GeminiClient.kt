@@ -148,72 +148,91 @@ class GeminiClient(private val context: Context) {
     }
 
     /**
-     * Generates native 24kHz PCM audio speech from Gemini TTS model
+     * Generates native audio speech from Gemini TTS models with fallback
      */
     suspend fun generateGeminiSpeechAudio(
         text: String,
         apiKey: String,
         voiceName: String = "Kore"
     ): ByteArray? = withContext(Dispatchers.IO) {
-        val ttsEndpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=$apiKey"
-        try {
-            val root = JSONObject().apply {
-                val contents = JSONArray().apply {
-                    put(JSONObject().apply {
-                        val parts = JSONArray().apply {
-                            put(JSONObject().put("text", text))
+        val sanitizedText = cleanTextForVoice(text)
+            .replace(Regex("[\\p{So}\\p{Cn}]"), "") // Remove emojis like ❤️ which causes TTS 400
+            .trim()
+
+        if (sanitizedText.isBlank()) return@withContext null
+
+        val candidateModels = listOf(
+            "gemini-3.8-flash-tts",
+            "gemini-3.1-flash-tts-preview",
+            "gemini-3.8-flash-lite-tts",
+            "gemini-2.5-pro-preview-tts",
+            "gemini-2.5-flash-preview-tts"
+        )
+
+        val root = JSONObject().apply {
+            val contents = JSONArray().apply {
+                put(JSONObject().apply {
+                    val parts = JSONArray().apply {
+                        put(JSONObject().put("text", sanitizedText))
+                    }
+                    put("parts", parts)
+                })
+            }
+            put("contents", contents)
+
+            val genConfig = JSONObject().apply {
+                val modalities = JSONArray().apply { put("AUDIO") }
+                put("responseModalities", modalities)
+
+                val speechConfig = JSONObject().apply {
+                    val voiceConfig = JSONObject().apply {
+                        val prebuilt = JSONObject().apply {
+                            put("voiceName", voiceName)
                         }
-                        put("parts", parts)
-                    })
+                        put("prebuiltVoiceConfig", prebuilt)
+                    }
+                    put("voiceConfig", voiceConfig)
                 }
-                put("contents", contents)
+                put("speechConfig", speechConfig)
+            }
+            put("generationConfig", genConfig)
+        }
 
-                val genConfig = JSONObject().apply {
-                    val modalities = JSONArray().apply { put("AUDIO") }
-                    put("responseModalities", modalities)
+        val requestBody = root.toString().toRequestBody(jsonMediaType)
 
-                    val speechConfig = JSONObject().apply {
-                        val voiceConfig = JSONObject().apply {
-                            val prebuilt = JSONObject().apply {
-                                put("voiceName", voiceName)
+        for (model in candidateModels) {
+            val ttsEndpoint = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey"
+            try {
+                val request = Request.Builder()
+                    .url(ttsEndpoint)
+                    .post(requestBody)
+                    .build()
+
+                okHttpClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        Log.w(tag, "Gemini TTS model $model returned ${response.code}, trying next model")
+                        return@use
+                    }
+                    val bodyStr = response.body?.string() ?: ""
+                    val obj = JSONObject(bodyStr)
+                    val candidates = obj.optJSONArray("candidates")
+                    val firstCandidate = candidates?.optJSONObject(0)
+                    val parts = firstCandidate?.optJSONObject("content")?.optJSONArray("parts")
+                    for (i in 0 until (parts?.length() ?: 0)) {
+                        val part = parts?.optJSONObject(i)
+                        val inlineData = part?.optJSONObject("inlineData")
+                        if (inlineData != null) {
+                            val b64 = inlineData.optString("data")
+                            if (b64.isNotBlank()) {
+                                Log.d(tag, "Gemini TTS successfully generated audio using $model")
+                                return@withContext Base64.decode(b64, Base64.DEFAULT)
                             }
-                            put("prebuiltVoiceConfig", prebuilt)
-                        }
-                        put("voiceConfig", voiceConfig)
-                    }
-                    put("speechConfig", speechConfig)
-                }
-                put("generationConfig", genConfig)
-            }
-
-            val request = Request.Builder()
-                .url(ttsEndpoint)
-                .post(root.toString().toRequestBody(jsonMediaType))
-                .build()
-
-            okHttpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    Log.w(tag, "Gemini TTS call failed: code ${response.code}")
-                    return@withContext null
-                }
-                val bodyStr = response.body?.string() ?: ""
-                val obj = JSONObject(bodyStr)
-                val candidates = obj.optJSONArray("candidates")
-                val firstCandidate = candidates?.optJSONObject(0)
-                val parts = firstCandidate?.optJSONObject("content")?.optJSONArray("parts")
-                for (i in 0 until (parts?.length() ?: 0)) {
-                    val part = parts?.optJSONObject(i)
-                    val inlineData = part?.optJSONObject("inlineData")
-                    if (inlineData != null) {
-                        val b64 = inlineData.optString("data")
-                        if (b64.isNotBlank()) {
-                            return@withContext Base64.decode(b64, Base64.DEFAULT)
                         }
                     }
                 }
+            } catch (e: Exception) {
+                Log.w(tag, "Gemini TTS model $model call failed", e)
             }
-        } catch (e: Exception) {
-            Log.w(tag, "Gemini native TTS failed, falling back to local TTS engine", e)
         }
         return@withContext null
     }
