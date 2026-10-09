@@ -143,6 +143,45 @@ object LocalCommandParser {
             )
         }
 
+        // 10. Anti-Theft Arm / Disarm
+        if (lower.contains("arm anti-theft") || lower.contains("arm anti theft") || lower.contains("chori se bachao on") || lower.contains("چوری سے بچاؤ آن")) {
+            return LocalParsedCommand(
+                matched = true,
+                command = "ARM_ANTI_THEFT",
+                spokenResponse = "اینٹی تھیفٹ پروٹیکشن فعال کر دی گئی ہے۔ فون ہلانے پر وارننگ ملے گی۔",
+                emotion = EmotionType.HAPPY
+            )
+        }
+
+        if (lower.contains("disarm anti-theft") || lower.contains("disarm anti theft") || lower.contains("chori se bachao band") || lower.contains("چوری سے بچاؤ بند")) {
+            return LocalParsedCommand(
+                matched = true,
+                command = "DISARM_ANTI_THEFT",
+                spokenResponse = "اینٹی تھیفٹ پروٹیکشن غیر فعال کر دی گئی ہے۔",
+                emotion = EmotionType.NEUTRAL
+            )
+        }
+
+        // 11. Daily Report
+        if (lower.contains("daily report") || lower.contains("conversation report") || lower.contains("rozana report") || lower.contains("روزانہ رپورٹ")) {
+            return LocalParsedCommand(
+                matched = true,
+                command = "DAILY_REPORT",
+                spokenResponse = "آج کی گفتگو کا مکمل خلاصہ حاضر ہے۔",
+                emotion = EmotionType.HAPPY
+            )
+        }
+
+        // 12. Routines
+        if (lower.contains("show routines") || lower.contains("meri routines") || lower.contains("روٹینز")) {
+            return LocalParsedCommand(
+                matched = true,
+                command = "SHOW_ROUTINES",
+                spokenResponse = "آپ کی تمام آٹومیشن روٹینز کھل رہی ہیں۔",
+                emotion = EmotionType.HAPPY
+            )
+        }
+
         return LocalParsedCommand(matched = false)
     }
 

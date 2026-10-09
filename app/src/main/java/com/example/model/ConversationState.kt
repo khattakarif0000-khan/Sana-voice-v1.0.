@@ -58,5 +58,24 @@ data class DiagnosticStatus(
     val audioFocusGranted: Boolean = false,
     val batteryPct: Int = -1,
     val lastError: String? = null,
-    val recoveryAttempt: Int = 0
+    val recoveryAttempt: Int = 0,
+    val elevenLabsStatus: String = "Not Configured (Fallback Active)",
+    val antiTheftStatus: String = "Disarmed",
+    val routinesCount: Int = 0
+)
+
+data class TeachingSessionState(
+    val isTeachingActive: Boolean = false,
+    val subject: String = "Mathematics (ریاضی)",
+    val level: String = "Beginner (بنیادی)",
+    val language: String = "Pakistani Urdu (اردو)",
+    val currentTopic: String? = null,
+    val step: Int = 1
+)
+
+data class SocialDraftState(
+    val isDraftActive: Boolean = false,
+    val platform: String = "WhatsApp",
+    val draftComment: String = "",
+    val targetPostSummary: String = ""
 )

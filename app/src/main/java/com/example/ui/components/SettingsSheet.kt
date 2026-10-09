@@ -76,7 +76,12 @@ fun SettingsSheet(
     var ttsPitch by remember { mutableStateOf(settings.ttsPitch) }
     var customApiKey by remember { mutableStateOf(settings.customApiKey) }
     var confirmSensitive by remember { mutableStateOf(settings.confirmSensitiveActions) }
+    var voiceProvider by remember { mutableStateOf(settings.voiceProvider) }
+    var elevenLabsApiKey by remember { mutableStateOf(settings.elevenLabsApiKey) }
+    var elevenLabsVoiceId by remember { mutableStateOf(settings.elevenLabsVoiceId) }
+    var antiTheftEnabled by remember { mutableStateOf(settings.antiTheftEnabled) }
     var showApiKey by remember { mutableStateOf(false) }
+    var showElevenKey by remember { mutableStateOf(false) }
 
     val scrollState = rememberScrollState()
 
@@ -347,7 +352,124 @@ fun SettingsSheet(
 
         Spacer(modifier = Modifier.height(14.dp))
 
-        // 4. Gemini API Key Configuration
+        // 4. Voice Engine Provider (Gemini Native vs ElevenLabs)
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = SanaSurfaceCard),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                Text(
+                    text = "Spoken Voice Engine Provider",
+                    color = Color.White,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 15.sp
+                )
+                Text(
+                    text = "Select primary voice generation pipeline (Zero Android TTS).",
+                    color = SanaTextSecondary,
+                    fontSize = 12.sp
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    val isGemini = voiceProvider == "GEMINI_NATIVE"
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .background(
+                                if (isGemini) SanaNeonCyan.copy(alpha = 0.25f) else SanaSurfaceElevated,
+                                RoundedCornerShape(10.dp)
+                            )
+                            .border(
+                                1.dp,
+                                if (isGemini) SanaNeonCyan else Color.Transparent,
+                                RoundedCornerShape(10.dp)
+                            )
+                            .clickable { voiceProvider = "GEMINI_NATIVE" }
+                            .padding(vertical = 10.dp, horizontal = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("Gemini Native", color = if (isGemini) Color.White else SanaTextSecondary, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Text("24kHz Low-Latency", color = SanaNeonCyan, fontSize = 10.sp)
+                        }
+                    }
+
+                    val isEleven = voiceProvider == "ELEVEN_LABS"
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .background(
+                                if (isEleven) SanaNeonPink.copy(alpha = 0.25f) else SanaSurfaceElevated,
+                                RoundedCornerShape(10.dp)
+                            )
+                            .border(
+                                1.dp,
+                                if (isEleven) SanaNeonPink else Color.Transparent,
+                                RoundedCornerShape(10.dp)
+                            )
+                            .clickable { voiceProvider = "ELEVEN_LABS" }
+                            .padding(vertical = 10.dp, horizontal = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("ElevenLabs", color = if (isEleven) Color.White else SanaTextSecondary, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Text("Optional Premium", color = SanaNeonPink, fontSize = 10.sp)
+                        }
+                    }
+                }
+
+                if (voiceProvider == "ELEVEN_LABS") {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "ElevenLabs API Key & Voice ID (Section 20):",
+                        color = SanaNeonPink,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    OutlinedTextField(
+                        value = elevenLabsApiKey,
+                        onValueChange = { elevenLabsApiKey = it },
+                        placeholder = { Text("Paste ElevenLabs API Key", color = SanaTextMuted, fontSize = 12.sp) },
+                        visualTransformation = if (showElevenKey) VisualTransformation.None else PasswordVisualTransformation(),
+                        trailingIcon = {
+                            IconButton(onClick = { showElevenKey = !showElevenKey }) {
+                                Icon(
+                                    imageVector = if (showElevenKey) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = "Toggle key",
+                                    tint = SanaNeonPink
+                                )
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = SanaNeonPink,
+                            unfocusedBorderColor = Color(0x33FF007F),
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White
+                        ),
+                        shape = RoundedCornerShape(10.dp)
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Fallback Rule: If key is blank or call fails, SANA seamlessly falls back to Gemini Native without breaking speech.",
+                        color = SanaTextMuted,
+                        fontSize = 11.sp
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // 5. Gemini API Key Configuration
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = SanaSurfaceCard),
@@ -407,7 +529,11 @@ fun SettingsSheet(
                     ttsSpeed = ttsSpeed,
                     ttsPitch = ttsPitch,
                     customApiKey = customApiKey,
-                    confirmSensitiveActions = confirmSensitive
+                    confirmSensitiveActions = confirmSensitive,
+                    voiceProvider = voiceProvider,
+                    elevenLabsApiKey = elevenLabsApiKey,
+                    elevenLabsVoiceId = elevenLabsVoiceId,
+                    antiTheftEnabled = antiTheftEnabled
                 )
                 onSaveSettings(updated)
                 onDismiss()

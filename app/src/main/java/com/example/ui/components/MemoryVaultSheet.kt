@@ -64,6 +64,33 @@ fun MemoryVaultSheet(
         else memories.filter { it.content.contains(searchQuery, ignoreCase = true) }
     }
 
+    var showClearAllConfirmation by remember { mutableStateOf(false) }
+
+    if (showClearAllConfirmation) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showClearAllConfirmation = false },
+            title = { Text("Clear All Memories?", color = Color.White, fontWeight = FontWeight.Bold) },
+            text = { Text("Are you sure you want to permanently delete all remembered facts? SANA will forget everything.", color = SanaTextSecondary) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showClearAllConfirmation = false
+                        onClearAll()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = SanaNeonRed)
+                ) {
+                    Text("Delete Everything")
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { showClearAllConfirmation = false }) {
+                    Text("Cancel", color = Color.White)
+                }
+            },
+            containerColor = SanaSurfaceCard
+        )
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -89,7 +116,7 @@ fun MemoryVaultSheet(
             }
             if (memories.isNotEmpty()) {
                 OutlinedButton(
-                    onClick = onClearAll,
+                    onClick = { showClearAllConfirmation = true },
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = SanaNeonRed)
                 ) {
                     Text("Clear All", fontSize = 12.sp)

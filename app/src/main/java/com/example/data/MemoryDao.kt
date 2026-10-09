@@ -20,6 +20,12 @@ interface MemoryDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertMemory(memory: MemoryEntity): Long
 
+    @Query("SELECT * FROM sana_memories WHERE category = :category LIMIT 1")
+    suspend fun getMemoryByCategory(category: String): MemoryEntity?
+
+    @Query("UPDATE sana_memories SET content = :content, timestamp = :timestamp WHERE id = :id")
+    suspend fun updateMemory(id: Long, content: String, timestamp: Long)
+
     @Query("DELETE FROM sana_memories WHERE id = :id")
     suspend fun deleteMemoryById(id: Long)
 

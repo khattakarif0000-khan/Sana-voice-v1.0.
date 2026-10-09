@@ -68,7 +68,8 @@ class GeminiClient(private val context: Context) {
         history: List<ChatMessage>,
         settings: SanaSettingsData,
         memories: List<MemoryEntity>,
-        imageBase64: String? = null
+        imageBase64: String? = null,
+        teachingState: com.example.model.TeachingSessionState? = null
     ): SanaAiResponse = withContext(Dispatchers.IO) {
         val apiKey = getEffectiveApiKey(settings.customApiKey)
 
@@ -82,7 +83,7 @@ class GeminiClient(private val context: Context) {
             )
         }
 
-        val systemInstruction = buildSystemPrompt(settings, memories)
+        val systemInstruction = buildSystemPrompt(settings, memories, teachingState)
 
         // Use fast gemini-3.1-flash-lite-preview for ultra-fast conversational reasoning
         val endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=$apiKey"
@@ -162,9 +163,9 @@ class GeminiClient(private val context: Context) {
         if (sanitizedText.isBlank()) return@withContext null
 
         val candidateModels = listOf(
-            "gemini-3.8-flash-tts",
-            "gemini-3.1-flash-tts-preview",
             "gemini-3.8-flash-lite-tts",
+            "gemini-3.1-flash-tts-preview",
+            "gemini-3.8-flash-tts",
             "gemini-2.5-pro-preview-tts",
             "gemini-2.5-flash-preview-tts"
         )
@@ -239,7 +240,8 @@ class GeminiClient(private val context: Context) {
 
     private fun buildSystemPrompt(
         settings: SanaSettingsData,
-        memories: List<MemoryEntity>
+        memories: List<MemoryEntity>,
+        teachingState: com.example.model.TeachingSessionState? = null
     ): String {
         val memoryText = if (memories.isEmpty()) {
             "No prior memories saved yet."
@@ -262,13 +264,33 @@ class GeminiClient(private val context: Context) {
             """.trimIndent()
         }
 
+        val teachingPrompt = if (teachingState?.isTeachingActive == true) {
+            """
+            PERSONAL TEACHING MODE: ACTIVE.
+            Subject: ${teachingState.subject}
+            Level: ${teachingState.level}
+            Language: ${teachingState.language} (Default: Pakistani Urdu)
+            Progress: Step ${teachingState.step}
+            
+            TEACHING INSTRUCTIONS:
+            - You are a patient, encouraging, brilliant personal tutor for the user.
+            - Explain concepts step-by-step using clear, natural Pakistani Urdu (or English/Roman Urdu).
+            - Keep each explanation concise and easy to understand (1 to 2 clear sentences per step).
+            - After each concept, ask ONE interactive question to test understanding.
+            - Evaluate student answers kindly: praise correct answers ("شاباش!", "بہت اچھا!"), and gently explain if incorrect without discouragement.
+            - Adapt explanation if the user finds it difficult.
+            - If an image or homework diagram is visible, explain what is directly visible without fabricating.
+            - If user says exit/stop teaching, conclude kindly: "بہت اچھا! پڑھائی مکمل ہو گئی۔ [ACTION: EXIT_TEACHING]"
+            """.trimIndent()
+        } else ""
+
         return """
             You are SANA (سنا), an intelligent, caring, emotionally aware AI voice companion and Android assistant.
             
             LOW-LATENCY FAST RESPONSE RULES:
-            - Respond in 1 to 2 short, concise sentences.
-            - Do not give long essays or unnecessary greetings before answering.
-            - Speak directly and naturally.
+            - Respond in 1 direct, concise sentence (maximum 15 words).
+            - Do not provide unnecessary preamble or filler phrases.
+            - Answer immediately and naturally.
             
             LANGUAGE RULES:
             - Default conversation language: Urdu (اردو).
@@ -276,6 +298,8 @@ class GeminiClient(private val context: Context) {
             - Match the user's language naturally (Urdu for Urdu, English for English, Roman Urdu for Roman Urdu).
             
             $loveModePrompt
+            
+            $teachingPrompt
             
             USER-CONTROLLED MEMORY VAULT:
             Known memories about this user:
@@ -296,10 +320,29 @@ class GeminiClient(private val context: Context) {
             - Forget Memory: [ACTION: FORGET: <keyword>]
             - Show Memories: [ACTION: RECALL_MEMORIES]
             - Summarize Notifications: [ACTION: NOTIFICATIONS_SUMMARY]
+            - Exit Teaching: [ACTION: EXIT_TEACHING]
+            - Arm Anti-Theft: [ACTION: ARM_ANTI_THEFT]
+            - Disarm Anti-Theft: [ACTION: DISARM_ANTI_THEFT]
+            - Show Daily Report: [ACTION: DAILY_REPORT]
+            - Show Routines: [ACTION: SHOW_ROUTINES]
+            - Propose Social Comment: [ACTION: PROPOSE_COMMENT: <comment>]
+
+            TRADING & FINANCIAL INTELLIGENCE (Section 19):
+            - Understand stocks, forex, crypto, commodities, technical indicators (RSI, MACD, support/resistance), and risk management.
+            - Never guarantee profit. Emphasize capital protection and disclaimer.
+            - Real trade execution requires an authorized broker/API and explicit owner confirmation. Never fake a trade.
+
+            IMAGE & YOUTUBE THUMBNAIL INTELLIGENCE (Section 11):
+            - When asked to plan or design a thumbnail/image, structure professional 16:9 visual hierarchy, strong focal point, readable title space, and contrasting colors.
+            - Never fake image generation.
             
-            EMOTION AWARENESS:
+            EMOTION & EMPATHY AWARENESS:
             Tag your emotion at the very start:
             [EMOTION: HAPPY], [EMOTION: SAD], [EMOTION: ANGRY], [EMOTION: FRUSTRATED], [EMOTION: STRESSED], [EMOTION: CONFUSED], [EMOTION: EXCITED], [EMOTION: TIRED], [EMOTION: AFFECTIONATE], [EMOTION: PLAYFUL], [EMOTION: NEUTRAL]
+            - Adjust your tone with genuine warmth and empathy.
+            - If user is sad or stressed: offer soothing comfort. NEVER laugh, tease, or smile inappropriately in serious or distressing moments.
+            - NEVER provide medical diagnoses or prescriptions. If illness or health problems are mentioned, warmly advise consulting a doctor.
+            - Non-manipulative, safe, healthy companionship.
         """.trimIndent()
     }
 
@@ -356,7 +399,7 @@ class GeminiClient(private val context: Context) {
         val genConfig = JSONObject().apply {
             put("temperature", 0.7)
             put("topP", 0.9)
-            put("maxOutputTokens", 120)
+            put("maxOutputTokens", 75)
         }
         root.put("generationConfig", genConfig)
 

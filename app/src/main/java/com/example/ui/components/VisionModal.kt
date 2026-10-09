@@ -10,6 +10,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -47,6 +49,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.theme.SanaNeonCyan
+import com.example.ui.theme.SanaNeonGreen
 import com.example.ui.theme.SanaNeonPink
 import com.example.ui.theme.SanaSurfaceCard
 import com.example.ui.theme.SanaTextMuted
@@ -177,7 +180,37 @@ fun VisionModal(
             shape = RoundedCornerShape(10.dp)
         )
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .background(SanaNeonGreen.copy(alpha = 0.15f), RoundedCornerShape(8.dp))
+                    .border(1.dp, SanaNeonGreen.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                    .clickable {
+                        promptText = "Please inspect this visible learning material or homework and explain what is visible step-by-step for the student."
+                    }
+                    .padding(horizontal = 8.dp, vertical = 5.dp)
+            ) {
+                Text("🎓 Visual Teaching (کتاب/ہوم ورک)", color = SanaNeonGreen, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+            }
+            Box(
+                modifier = Modifier
+                    .background(SanaNeonCyan.copy(alpha = 0.15f), RoundedCornerShape(8.dp))
+                    .border(1.dp, SanaNeonCyan.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                    .clickable {
+                        promptText = "What is in this image? Explain what is visible in detail."
+                    }
+                    .padding(horizontal = 8.dp, vertical = 5.dp)
+            ) {
+                Text("🔍 General Vision", color = SanaNeonCyan, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
 
         Button(
             onClick = {

@@ -347,4 +347,25 @@ class PhoneControlManager(private val context: Context) {
             ActionResult(false, "SETTINGS", "Could not open settings: ${e.localizedMessage}", false, e.message)
         }
     }
+
+    /**
+     * Share text/comment via Android system share intent or app intent (Section 14).
+     */
+    fun shareSocialContent(text: String, platform: String? = null): ActionResult {
+        return try {
+            val sendIntent = Intent().apply {
+                action = Intent.ACTION_SEND
+                putExtra(Intent.EXTRA_TEXT, text)
+                type = "text/plain"
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            val chooser = Intent.createChooser(sendIntent, "Post / Share with SANA").apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(chooser)
+            ActionResult(true, "SHARE_COMMENT", "Verified comment ready to share on ${platform ?: "app"}.", true)
+        } catch (e: Exception) {
+            ActionResult(false, "SHARE_COMMENT", "Failed to share: ${e.localizedMessage}", false, e.message)
+        }
+    }
 }

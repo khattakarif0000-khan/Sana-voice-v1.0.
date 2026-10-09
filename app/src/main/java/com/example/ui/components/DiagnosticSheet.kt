@@ -105,6 +105,21 @@ fun DiagnosticSheet(
                     detail = if (status.geminiVoiceReady) "24kHz AudioTrack Speaker Ready" else "Audio engine ready"
                 )
                 DiagnosticRow(
+                    name = "ElevenLabs Premium Voice",
+                    isHealthy = !status.elevenLabsStatus.startsWith("Error"),
+                    detail = status.elevenLabsStatus
+                )
+                DiagnosticRow(
+                    name = "Smart Anti-Theft Protection",
+                    isHealthy = status.antiTheftStatus.contains("Armed") || status.antiTheftStatus == "Disarmed",
+                    detail = status.antiTheftStatus
+                )
+                DiagnosticRow(
+                    name = "Automation & Routines",
+                    isHealthy = true,
+                    detail = "${status.routinesCount} configured routines active"
+                )
+                DiagnosticRow(
                     name = "Network Connectivity",
                     isHealthy = status.networkAvailable,
                     detail = if (status.networkAvailable) "Connected" else "Offline (Using local command fallback)"

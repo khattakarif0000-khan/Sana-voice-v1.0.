@@ -6,6 +6,7 @@ import android.media.AudioFocusRequest
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
+import android.media.MediaPlayer
 import android.os.Build
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
@@ -16,6 +17,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.io.File
+import java.io.FileOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
 
 class SanaAudioTrackPlayer(
@@ -29,6 +32,7 @@ class SanaAudioTrackPlayer(
     private var audioFocusRequest: AudioFocusRequest? = null
 
     private var currentAudioTrack: AudioTrack? = null
+    private var currentMediaPlayer: MediaPlayer? = null
     private var playbackJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO)
     private val isInterrupted = AtomicBoolean(false)
@@ -136,6 +140,68 @@ class SanaAudioTrackPlayer(
     }
 
     /**
+     * Plays MP3 audio (e.g. from ElevenLabs premium voice) through standard Android MediaPlayer.
+     */
+    fun playMp3Audio(mp3Data: ByteArray) {
+        if (mp3Data.isEmpty()) {
+            onPlaybackFinished()
+            return
+        }
+
+        stop()
+        isInterrupted.set(false)
+
+        playbackJob = scope.launch {
+            try {
+                val tempFile = File.createTempFile("sana_voice_", ".mp3", context.cacheDir)
+                FileOutputStream(tempFile).use { it.write(mp3Data) }
+
+                requestAudioFocus()
+
+                val mp = MediaPlayer().apply {
+                    setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
+                    setDataSource(tempFile.absolutePath)
+                    prepare()
+                }
+
+                currentMediaPlayer = mp
+                mp.setOnCompletionListener {
+                    _isPlaying.value = false
+                    abandonAudioFocus()
+                    releaseMediaPlayerSafely(mp)
+                    tempFile.delete()
+                    if (!isInterrupted.get()) {
+                        onPlaybackFinished()
+                    }
+                }
+                mp.setOnErrorListener { _, what, extra ->
+                    Log.w(tag, "MediaPlayer error: $what, $extra")
+                    _isPlaying.value = false
+                    abandonAudioFocus()
+                    releaseMediaPlayerSafely(mp)
+                    tempFile.delete()
+                    onPlaybackError("MediaPlayer error: $what")
+                    true
+                }
+
+                mp.start()
+                _isPlaying.value = true
+                onPlaybackStarted()
+            } catch (e: Exception) {
+                Log.e(tag, "MP3 playback exception", e)
+                _isPlaying.value = false
+                abandonAudioFocus()
+                onPlaybackError(e.localizedMessage ?: "MP3 playback failed")
+            }
+        }
+    }
+
+    /**
      * Extracts raw PCM payload from byte stream, stripping standard 44-byte WAV header if present
      */
     private fun extractPcmBytes(data: ByteArray): ByteArray {
@@ -179,6 +245,18 @@ class SanaAudioTrackPlayer(
             }
         }
         currentAudioTrack = null
+
+        currentMediaPlayer?.let { mp ->
+            try {
+                if (mp.isPlaying) mp.stop()
+            } catch (e: Exception) {
+                Log.w(tag, "Error stopping media player", e)
+            } finally {
+                releaseMediaPlayerSafely(mp)
+            }
+        }
+        currentMediaPlayer = null
+
         _isPlaying.value = false
         abandonAudioFocus()
     }
@@ -188,6 +266,15 @@ class SanaAudioTrackPlayer(
             track.release()
         } catch (e: Exception) {
             Log.w(tag, "Error releasing audio track", e)
+        }
+    }
+
+    private fun releaseMediaPlayerSafely(mp: MediaPlayer) {
+        try {
+            mp.reset()
+            mp.release()
+        } catch (e: Exception) {
+            Log.w(tag, "Error releasing media player", e)
         }
     }
 
