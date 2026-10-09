@@ -15,13 +15,18 @@ data class SanaSettingsData(
     val continuousHandsFree: Boolean = true,
     val customApiKey: String = "",
     val confirmSensitiveActions: Boolean = true,
-    // V4 Additions
+    // Anti-Theft Protection
     val antiTheftEnabled: Boolean = false,
     val antiTheftSensitivity: String = "MEDIUM", // "LOW", "MEDIUM", "HIGH"
     val antiTheftPin: String = "1234",
+    // Voice Provider & ElevenLabs Configuration
     val voiceProvider: String = "GEMINI_NATIVE", // "GEMINI_NATIVE", "ELEVEN_LABS"
     val elevenLabsApiKey: String = "",
-    val elevenLabsVoiceId: String = "21m00Tcm4TlvDq8ikWAM"
+    val elevenLabsModelId: String = "eleven_multilingual_v2",
+    val elevenLabsVoiceId: String = "21m00Tcm4TlvDq8ikWAM",
+    val elevenLabsStability: Float = 0.65f,
+    val elevenLabsSimilarity: Float = 0.80f,
+    val elevenLabsOutputFormat: String = "mp3_44100_128"
 )
 
 class SanaPreferences(context: Context) {
@@ -46,7 +51,11 @@ class SanaPreferences(context: Context) {
             antiTheftPin = prefs.getString("anti_theft_pin", "1234") ?: "1234",
             voiceProvider = prefs.getString("voice_provider", "GEMINI_NATIVE") ?: "GEMINI_NATIVE",
             elevenLabsApiKey = prefs.getString("eleven_labs_api_key", "") ?: "",
-            elevenLabsVoiceId = prefs.getString("eleven_labs_voice_id", "21m00Tcm4TlvDq8ikWAM") ?: "21m00Tcm4TlvDq8ikWAM"
+            elevenLabsModelId = prefs.getString("eleven_labs_model_id", "eleven_multilingual_v2") ?: "eleven_multilingual_v2",
+            elevenLabsVoiceId = prefs.getString("eleven_labs_voice_id", "21m00Tcm4TlvDq8ikWAM") ?: "21m00Tcm4TlvDq8ikWAM",
+            elevenLabsStability = prefs.getFloat("eleven_labs_stability", 0.65f),
+            elevenLabsSimilarity = prefs.getFloat("eleven_labs_similarity", 0.80f),
+            elevenLabsOutputFormat = prefs.getString("eleven_labs_output_format", "mp3_44100_128") ?: "mp3_44100_128"
         )
     }
 
@@ -65,10 +74,19 @@ class SanaPreferences(context: Context) {
             putString("anti_theft_pin", newSettings.antiTheftPin)
             putString("voice_provider", newSettings.voiceProvider)
             putString("eleven_labs_api_key", newSettings.elevenLabsApiKey)
+            putString("eleven_labs_model_id", newSettings.elevenLabsModelId)
             putString("eleven_labs_voice_id", newSettings.elevenLabsVoiceId)
+            putFloat("eleven_labs_stability", newSettings.elevenLabsStability)
+            putFloat("eleven_labs_similarity", newSettings.elevenLabsSimilarity)
+            putString("eleven_labs_output_format", newSettings.elevenLabsOutputFormat)
             apply()
         }
         _settings.value = newSettings
+    }
+
+    fun resetToDefaults() {
+        val defaults = SanaSettingsData()
+        updateSettings(defaults)
     }
 
     fun setCustomApiKey(key: String) {

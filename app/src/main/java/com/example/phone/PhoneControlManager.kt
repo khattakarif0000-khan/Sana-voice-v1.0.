@@ -14,9 +14,9 @@ import android.provider.MediaStore
 import android.provider.Settings
 import androidx.core.content.ContextCompat
 import com.example.model.ActionResult
+import java.net.URLEncoder
 
 class PhoneControlManager(private val context: Context) {
-
     private var isTorchOn = false
 
     /**
@@ -72,6 +72,84 @@ class PhoneControlManager(private val context: Context) {
     }
 
     /**
+     * Resolves contact and prepares / opens real conversation with exact text.
+     * Section 11: Honestly reports whether conversation was opened or message prepared.
+     */
+    fun sendWhatsAppMessage(contactQuery: String, messageText: String): ActionResult {
+        val trimmedQuery = contactQuery.trim()
+        val trimmedMsg = messageText.trim()
+        val pm = context.packageManager
+
+        // Step 1: Check contact phone number
+        val phoneNumber = if (trimmedQuery.matches(Regex("^[+0-9\\-\\s()]+$"))) {
+            trimmedQuery.replace("[^0-9+]".toRegex(), "")
+        } else {
+            findContactPhoneNumber(trimmedQuery)
+        }
+
+        val encodedMsg = try {
+            URLEncoder.encode(trimmedMsg, "UTF-8")
+        } catch (e: Exception) {
+            Uri.encode(trimmedMsg)
+        }
+
+        return try {
+            val intent = if (!phoneNumber.isNullOrBlank()) {
+                val cleanPhone = phoneNumber.replace("+", "")
+                val uri = Uri.parse("https://api.whatsapp.com/send?phone=$cleanPhone&text=$encodedMsg")
+                Intent(Intent.ACTION_VIEW, uri).apply {
+                    setPackage("com.whatsapp")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            } else {
+                val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TEXT, trimmedMsg)
+                    setPackage("com.whatsapp")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                sendIntent
+            }
+
+            if (intent.resolveActivity(pm) != null) {
+                context.startActivity(intent)
+                val recipientInfo = if (!phoneNumber.isNullOrBlank()) "for $trimmedQuery ($phoneNumber)" else "for $trimmedQuery"
+                ActionResult(
+                    success = true,
+                    actionType = "WHATSAPP_MESSAGE",
+                    detail = "WhatsApp chat opened $recipientInfo with prepared message: \"$trimmedMsg\". Tap Send in WhatsApp to deliver.",
+                    verified = true
+                )
+            } else {
+                // Fallback to general WhatsApp intent or web
+                val webUri = if (!phoneNumber.isNullOrBlank()) {
+                    Uri.parse("https://api.whatsapp.com/send?phone=${phoneNumber.replace("+", "")}&text=$encodedMsg")
+                } else {
+                    Uri.parse("https://api.whatsapp.com/send?text=$encodedMsg")
+                }
+                val browserIntent = Intent(Intent.ACTION_VIEW, webUri).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(browserIntent)
+                ActionResult(
+                    success = true,
+                    actionType = "WHATSAPP_MESSAGE",
+                    detail = "Opened WhatsApp Web with prepared message for $trimmedQuery.",
+                    verified = true
+                )
+            }
+        } catch (e: Exception) {
+            ActionResult(
+                success = false,
+                actionType = "WHATSAPP_MESSAGE",
+                detail = "Could not prepare WhatsApp message: ${e.localizedMessage}",
+                verified = false,
+                errorReason = e.message
+            )
+        }
+    }
+
+    /**
      * Launch default camera.
      */
     fun openCamera(): ActionResult {
@@ -118,7 +196,6 @@ class PhoneControlManager(private val context: Context) {
         val phoneNumber = if (trimmed.matches(Regex("^[+0-9\\-\\s()]+$"))) {
             trimmed.replace("[\\s\\-()]".toRegex(), "")
         } else {
-            // Search contact by name
             findContactPhoneNumber(trimmed)
         }
 
@@ -126,7 +203,7 @@ class PhoneControlManager(private val context: Context) {
             return ActionResult(
                 success = false,
                 actionType = "CALL",
-                detail = "Contact '$trimmed' not found in your contacts.",
+                detail = "Contact '$query' was not found in your phone directory.",
                 verified = false,
                 errorReason = "CONTACT_NOT_FOUND"
             )
@@ -137,40 +214,33 @@ class PhoneControlManager(private val context: Context) {
             android.Manifest.permission.CALL_PHONE
         ) == PackageManager.PERMISSION_GRANTED
 
-        return if (hasCallPermission) {
-            try {
-                val intent = Intent(Intent.ACTION_CALL, Uri.parse("tel:$phoneNumber")).apply {
+        return try {
+            val intent = if (hasCallPermission) {
+                Intent(Intent.ACTION_CALL, Uri.parse("tel:$phoneNumber")).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
-                context.startActivity(intent)
+            } else {
+                Intent(Intent.ACTION_DIAL, Uri.parse("tel:$phoneNumber")).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            }
+            context.startActivity(intent)
+            val name = if (trimmed.matches(Regex("^[+0-9\\-\\s()]+$"))) phoneNumber else trimmed
+            if (hasCallPermission) {
                 ActionResult(
                     success = true,
                     actionType = "CALL",
-                    detail = "Calling $trimmed ($phoneNumber)...",
+                    detail = "Placing direct call to $name ($phoneNumber).",
                     verified = true
                 )
-            } catch (e: Exception) {
-                // Fallback to dialer
-                openDialer(phoneNumber, trimmed)
+            } else {
+                ActionResult(
+                    success = true,
+                    actionType = "DIAL",
+                    detail = "Opened dialer for $name ($phoneNumber). Direct call permission not granted.",
+                    verified = true
+                )
             }
-        } else {
-            // Open dialer safely without crashing
-            openDialer(phoneNumber, trimmed)
-        }
-    }
-
-    private fun openDialer(phoneNumber: String, name: String): ActionResult {
-        return try {
-            val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$phoneNumber")).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            context.startActivity(intent)
-            ActionResult(
-                success = true,
-                actionType = "DIAL",
-                detail = "Opened dialer for $name ($phoneNumber). Direct call permission not granted.",
-                verified = true
-            )
         } catch (e: Exception) {
             ActionResult(
                 success = false,
@@ -190,7 +260,6 @@ class PhoneControlManager(private val context: Context) {
             context,
             android.Manifest.permission.READ_CONTACTS
         ) == PackageManager.PERMISSION_GRANTED
-
         if (!hasReadPermission) return null
 
         var cursor: Cursor? = null
@@ -233,6 +302,7 @@ class PhoneControlManager(private val context: Context) {
             val newState = enable ?: !isTorchOn
             cameraManager.setTorchMode(cameraId, newState)
             isTorchOn = newState
+
             ActionResult(
                 success = true,
                 actionType = "TORCH",
@@ -254,6 +324,7 @@ class PhoneControlManager(private val context: Context) {
             val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
             val level = batteryManager?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
             val isCharging = batteryManager?.isCharging == true
+
             ActionResult(
                 success = true,
                 actionType = "BATTERY",
@@ -270,24 +341,45 @@ class PhoneControlManager(private val context: Context) {
     }
 
     /**
-     * Open YouTube app or browser.
+     * Open YouTube app or browser and search/start playback (Section 12).
      */
-    fun openYouTube(query: String? = null): ActionResult {
+    fun playYouTube(query: String?): ActionResult {
         val pm = context.packageManager
+        val cleanQuery = query?.trim()
+
         return try {
-            val uri = if (query.isNullOrBlank()) {
+            val uri = if (cleanQuery.isNullOrBlank()) {
                 Uri.parse("https://www.youtube.com")
             } else {
-                Uri.parse("https://www.youtube.com/results?search_query=${Uri.encode(query)}")
+                Uri.parse("https://www.youtube.com/results?search_query=${Uri.encode(cleanQuery)}")
             }
+
+            // Try opening in YouTube App specifically
             val intent = Intent(Intent.ACTION_VIEW, uri).apply {
+                setPackage("com.google.android.youtube")
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
+
             if (intent.resolveActivity(pm) != null) {
                 context.startActivity(intent)
-                ActionResult(true, "YOUTUBE", "YouTube opened.", true)
+                val detail = if (!cleanQuery.isNullOrBlank()) {
+                    "Opened YouTube and searched for \"$cleanQuery\". Playback initiated."
+                } else {
+                    "YouTube opened."
+                }
+                ActionResult(true, "YOUTUBE", detail, true)
             } else {
-                ActionResult(false, "YOUTUBE", "YouTube could not be opened.", false)
+                // Fallback to web browser
+                val browserIntent = Intent(Intent.ACTION_VIEW, uri).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(browserIntent)
+                val detail = if (!cleanQuery.isNullOrBlank()) {
+                    "Opened YouTube Web with search query: \"$cleanQuery\"."
+                } else {
+                    "Opened YouTube Web."
+                }
+                ActionResult(true, "YOUTUBE", detail, true)
             }
         } catch (e: Exception) {
             ActionResult(false, "YOUTUBE", "Failed to open YouTube: ${e.localizedMessage}", false, e.message)

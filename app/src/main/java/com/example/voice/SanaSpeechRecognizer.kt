@@ -66,10 +66,10 @@ class SanaSpeechRecognizer(
             _isListening.value = false
             _rmsDb.value = 0f
 
-            // If we captured valid partial speech before timeout/error, deliver it
+            // If we captured valid partial speech before timeout/error, deliver it accurately
             if ((error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) &&
                 lastPartialText.isNotBlank()) {
-                val text = lastPartialText.trim()
+                val text = cleanTranscript(lastPartialText)
                 lastPartialText = ""
                 onResult(text)
                 return
@@ -92,12 +92,14 @@ class SanaSpeechRecognizer(
             _rmsDb.value = 0f
 
             val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            val recognizedText = matches?.firstOrNull()?.trim() ?: lastPartialText.trim()
+            // Pick most confident verbatim transcript, without word reversal or silent translation
+            val rawText = matches?.firstOrNull()?.trim() ?: lastPartialText.trim()
             lastPartialText = ""
 
-            if (recognizedText.isNotBlank()) {
-                Log.d(tag, "Speech recognized: $recognizedText")
-                onResult(recognizedText)
+            val cleaned = cleanTranscript(rawText)
+            if (cleaned.isNotBlank()) {
+                Log.d(tag, "Original Speech verbatim recognized: $cleaned")
+                onResult(cleaned)
             } else {
                 onNoSpeechDetected()
             }
@@ -119,6 +121,15 @@ class SanaSpeechRecognizer(
         initRecognizer()
     }
 
+    /**
+     * Cleans up transcript while strictly preserving original word order,
+     * RTL text, and mixed Roman Urdu/Urdu/English phrasing (Section 9).
+     */
+    private fun cleanTranscript(raw: String): String {
+        return raw.trim()
+            .replace("\\s+".toRegex(), " ")
+    }
+
     private fun initRecognizer() {
         if (!SpeechRecognizer.isRecognitionAvailable(context)) {
             Log.e(tag, "Speech recognition is NOT available on this device.")
@@ -137,7 +148,7 @@ class SanaSpeechRecognizer(
     }
 
     /**
-     * Starts listening. Always cleans up any previous session first to ensure only 1 session exists.
+     * Starts listening. Sets proper speech input silence length so words aren't cut off.
      */
     fun startListening(languageMode: String = "auto") {
         if (isDestroyed) return
@@ -153,29 +164,32 @@ class SanaSpeechRecognizer(
                 val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                     putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                    putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+                    putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
 
-                    // Fast turn-detection silence thresholds
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 650L)
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 500L)
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 350L)
+                    // Generous silence threshold to avoid premature cutoff during thinking or natural pauses
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1100L)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 850L)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 400L)
 
                     when (languageMode.lowercase()) {
                         "ur" -> {
                             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ur-PK")
                             putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "ur-PK")
+                            putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", arrayOf("ur", "en-US"))
                         }
                         "en" -> {
                             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
                             putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "en-US")
+                            putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", arrayOf("en-GB", "ur-PK"))
                         }
                         else -> {
-                            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toString())
+                            // Urdu first preference for bilingual Pakistani users, auto fallback to English
+                            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ur-PK")
+                            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "ur-PK")
                             putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", arrayOf("ur-PK", "en-US", "ur"))
                         }
                     }
                 }
-
                 speechRecognizer?.startListening(intent)
             } catch (e: Exception) {
                 Log.e(tag, "startListening error", e)

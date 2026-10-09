@@ -17,7 +17,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -50,12 +50,9 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.SanaSettingsData
-import com.example.ui.theme.SanaNeonBlue
 import com.example.ui.theme.SanaNeonCyan
 import com.example.ui.theme.SanaNeonGreen
 import com.example.ui.theme.SanaNeonPink
-import com.example.ui.theme.SanaNeonPurple
-import com.example.ui.theme.SanaNeonRed
 import com.example.ui.theme.SanaSurfaceCard
 import com.example.ui.theme.SanaSurfaceElevated
 import com.example.ui.theme.SanaTextMuted
@@ -79,6 +76,7 @@ fun SettingsSheet(
     var voiceProvider by remember { mutableStateOf(settings.voiceProvider) }
     var elevenLabsApiKey by remember { mutableStateOf(settings.elevenLabsApiKey) }
     var elevenLabsVoiceId by remember { mutableStateOf(settings.elevenLabsVoiceId) }
+    var elevenLabsModelId by remember { mutableStateOf(settings.elevenLabsModelId) }
     var antiTheftEnabled by remember { mutableStateOf(settings.antiTheftEnabled) }
     var showApiKey by remember { mutableStateOf(false) }
     var showElevenKey by remember { mutableStateOf(false) }
@@ -109,89 +107,56 @@ fun SettingsSheet(
                     color = SanaTextSecondary
                 )
             }
-            Box(
-                modifier = Modifier
-                    .background(
-                        if (isAiConnected) SanaNeonGreen.copy(alpha = 0.15f) else SanaNeonRed.copy(alpha = 0.15f),
-                        RoundedCornerShape(8.dp)
-                    )
-                    .border(
-                        1.dp,
-                        if (isAiConnected) SanaNeonGreen else SanaNeonRed,
-                        RoundedCornerShape(8.dp)
-                    )
-                    .padding(horizontal = 8.dp, vertical = 4.dp)
-            ) {
-                Text(
-                    text = if (isAiConnected) "AI CONNECTED" else "AI KEY NEEDED",
-                    color = if (isAiConnected) SanaNeonGreen else SanaNeonRed,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold
-                )
+            IconButton(onClick = onDismiss) {
+                Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
             }
         }
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // 1. Language Selection
-        Card(
+        // 1. Language Mode Selector
+        Text(text = "Primary Conversation Language", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(
             modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = SanaSurfaceCard),
-            shape = RoundedCornerShape(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Column(modifier = Modifier.padding(14.dp)) {
-                Text(
-                    text = "Conversation Language",
-                    color = Color.White,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 15.sp
-                )
-                Text(
-                    text = "Default is Urdu (اردو), with English & Roman Urdu fluently supported.",
-                    color = SanaTextSecondary,
-                    fontSize = 12.sp
-                )
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+            listOf(
+                "auto" to "Auto (اردو / Eng)",
+                "ur" to "Urdu (اردو)",
+                "roman_ur" to "Roman Urdu",
+                "en" to "English"
+            ).forEach { (mode, label) ->
+                val isSelected = languageMode == mode
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .background(
+                            if (isSelected) SanaNeonCyan.copy(alpha = 0.25f) else SanaSurfaceElevated,
+                            RoundedCornerShape(10.dp)
+                        )
+                        .border(
+                            1.dp,
+                            if (isSelected) SanaNeonCyan else Color.Transparent,
+                            RoundedCornerShape(10.dp)
+                        )
+                        .clickable { languageMode = mode }
+                        .padding(vertical = 10.dp),
+                    contentAlignment = Alignment.Center
                 ) {
-                    val langs = listOf(
-                        "auto" to "Auto",
-                        "ur" to "اردو (Urdu)",
-                        "en" to "English",
-                        "roman_ur" to "Roman Urdu"
+                    Text(
+                        text = label,
+                        color = if (isSelected) Color.White else SanaTextSecondary,
+                        fontSize = 11.sp,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                     )
-                    langs.forEach { (key, label) ->
-                        val selected = languageMode == key
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .background(
-                                    if (selected) SanaNeonPink else SanaSurfaceElevated,
-                                    RoundedCornerShape(8.dp)
-                                )
-                                .clickable { languageMode = key }
-                                .padding(vertical = 8.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = label,
-                                color = if (selected) Color.White else SanaTextSecondary,
-                                fontSize = 11.sp,
-                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
-                            )
-                        }
-                    }
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
-        // 2. Love Mode & Playful Jealousy (Section 11)
+        // 2. Love Mode & Personality Tuning
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = SanaSurfaceCard),
@@ -203,34 +168,26 @@ fun SettingsSheet(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.Favorite,
-                            contentDescription = "Love Mode",
-                            tint = SanaNeonPink,
-                            modifier = Modifier.size(20.dp)
+                    Column {
+                        Text(
+                            text = "Love & Affection Mode",
+                            color = SanaNeonPink,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Column {
-                            Text(
-                                text = "Love / Companion Mode",
-                                color = Color.White,
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 15.sp
-                            )
-                            Text(
-                                text = "Affection, caring, warm emotional companionship",
-                                color = SanaTextSecondary,
-                                fontSize = 12.sp
-                            )
-                        }
+                        Text(
+                            text = "Warm, deeply affectionate Urdu companion tone",
+                            color = SanaTextSecondary,
+                            fontSize = 12.sp
+                        )
                     }
                     Switch(
                         checked = loveModeEnabled,
                         onCheckedChange = { loveModeEnabled = it },
                         colors = SwitchDefaults.colors(
-                            checkedThumbColor = Color.White,
-                            checkedTrackColor = SanaNeonPink,
+                            checkedThumbColor = SanaNeonPink,
+                            checkedTrackColor = SanaNeonPink.copy(alpha = 0.4f),
+                            uncheckedThumbColor = Color.Gray,
                             uncheckedTrackColor = SanaSurfaceElevated
                         )
                     )
@@ -239,24 +196,28 @@ fun SettingsSheet(
                 if (loveModeEnabled) {
                     Spacer(modifier = Modifier.height(12.dp))
                     Text(
-                        text = "Playful Jealousy Level:",
+                        text = "Playful Jealousy Intensity:",
                         color = Color.White,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Medium
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
                     )
                     Spacer(modifier = Modifier.height(6.dp))
-
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         listOf("OFF", "Light", "Playful").forEach { level ->
-                            val selected = jealousyLevel == level
+                            val isSelected = jealousyLevel == level
                             Box(
                                 modifier = Modifier
                                     .weight(1f)
                                     .background(
-                                        if (selected) SanaNeonPurple else SanaSurfaceElevated,
+                                        if (isSelected) SanaNeonPink.copy(alpha = 0.25f) else SanaSurfaceElevated,
+                                        RoundedCornerShape(8.dp)
+                                    )
+                                    .border(
+                                        1.dp,
+                                        if (isSelected) SanaNeonPink else Color.Transparent,
                                         RoundedCornerShape(8.dp)
                                     )
                                     .clickable { jealousyLevel = level }
@@ -265,94 +226,20 @@ fun SettingsSheet(
                             ) {
                                 Text(
                                     text = level,
-                                    color = if (selected) Color.White else SanaTextSecondary,
+                                    color = if (isSelected) Color.White else SanaTextSecondary,
                                     fontSize = 12.sp,
-                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                                 )
                             }
                         }
                     }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "Safety Note: Jealousy is strictly playful and fictional. SANA will never manipulate, guilt-trip, isolate, or claim ownership.",
-                        color = SanaTextMuted,
-                        fontSize = 11.sp,
-                        lineHeight = 15.sp
-                    )
                 }
             }
         }
 
         Spacer(modifier = Modifier.height(14.dp))
 
-        // 3. Voice Tuning (Speed & Pitch & Audition)
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = SanaSurfaceCard),
-            shape = RoundedCornerShape(12.dp)
-        ) {
-            Column(modifier = Modifier.padding(14.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Voice Tone & Speed",
-                        color = Color.White,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 15.sp
-                    )
-                    OutlinedButton(
-                        onClick = onTestVoice,
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = SanaNeonCyan)
-                    ) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = "Play", modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Test Voice", fontSize = 12.sp)
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                Text(
-                    text = "Speech Speed: ${String.format("%.2f", ttsSpeed)}x",
-                    color = SanaTextSecondary,
-                    fontSize = 13.sp
-                )
-                Slider(
-                    value = ttsSpeed,
-                    onValueChange = { ttsSpeed = it },
-                    valueRange = 0.8f..1.4f,
-                    colors = SliderDefaults.colors(
-                        thumbColor = SanaNeonCyan,
-                        activeTrackColor = SanaNeonCyan,
-                        inactiveTrackColor = SanaSurfaceElevated
-                    )
-                )
-
-                Text(
-                    text = "Voice Pitch: ${String.format("%.2f", ttsPitch)}x",
-                    color = SanaTextSecondary,
-                    fontSize = 13.sp
-                )
-                Slider(
-                    value = ttsPitch,
-                    onValueChange = { ttsPitch = it },
-                    valueRange = 0.8f..1.4f,
-                    colors = SliderDefaults.colors(
-                        thumbColor = SanaNeonPink,
-                        activeTrackColor = SanaNeonPink,
-                        inactiveTrackColor = SanaSurfaceElevated
-                    )
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(14.dp))
-
-        // 4. Voice Engine Provider (Gemini Native vs ElevenLabs)
+        // 3. Voice Provider & ElevenLabs Selector
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = SanaSurfaceCard),
@@ -360,17 +247,16 @@ fun SettingsSheet(
         ) {
             Column(modifier = Modifier.padding(14.dp)) {
                 Text(
-                    text = "Spoken Voice Engine Provider",
+                    text = "Speech Voice Engine",
                     color = Color.White,
                     fontWeight = FontWeight.SemiBold,
                     fontSize = 15.sp
                 )
                 Text(
-                    text = "Select primary voice generation pipeline (Zero Android TTS).",
+                    text = "Ultra low-latency Gemini 24kHz vs ElevenLabs Premium",
                     color = SanaTextSecondary,
                     fontSize = 12.sp
                 )
-
                 Spacer(modifier = Modifier.height(10.dp))
 
                 Row(
@@ -427,7 +313,7 @@ fun SettingsSheet(
                 if (voiceProvider == "ELEVEN_LABS") {
                     Spacer(modifier = Modifier.height(12.dp))
                     Text(
-                        text = "ElevenLabs API Key & Voice ID (Section 20):",
+                        text = "ElevenLabs Model & Key:",
                         color = SanaNeonPink,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold
@@ -469,6 +355,20 @@ fun SettingsSheet(
 
         Spacer(modifier = Modifier.height(14.dp))
 
+        // 4. Voice Audition Button
+        OutlinedButton(
+            onClick = onTestVoice,
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = SanaNeonCyan),
+            shape = RoundedCornerShape(10.dp)
+        ) {
+            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(modifier = Modifier.width(6.dp))
+            Text("Test Voice Audition", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
         // 5. Gemini API Key Configuration
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -487,9 +387,7 @@ fun SettingsSheet(
                     color = SanaTextSecondary,
                     fontSize = 12.sp
                 )
-
                 Spacer(modifier = Modifier.height(8.dp))
-
                 OutlinedTextField(
                     value = customApiKey,
                     onValueChange = { customApiKey = it },
@@ -532,6 +430,7 @@ fun SettingsSheet(
                     confirmSensitiveActions = confirmSensitive,
                     voiceProvider = voiceProvider,
                     elevenLabsApiKey = elevenLabsApiKey,
+                    elevenLabsModelId = elevenLabsModelId,
                     elevenLabsVoiceId = elevenLabsVoiceId,
                     antiTheftEnabled = antiTheftEnabled
                 )

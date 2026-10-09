@@ -9,6 +9,7 @@ import com.example.data.SanaSettingsData
 import com.example.model.ChatMessage
 import com.example.model.EmotionType
 import com.example.model.MessageRole
+import com.example.model.SanaAiResponse
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.ConnectionPool
@@ -18,25 +19,17 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.IOException
+import java.io.ByteArrayOutputStream
 import java.util.concurrent.TimeUnit
-
-data class SanaAiResponse(
-    val replyText: String,
-    val emotion: EmotionType = EmotionType.NEUTRAL,
-    val actionCommand: String? = null,
-    val actionParameter: String? = null,
-    val audioBytes: ByteArray? = null,
-    val isAiSuccess: Boolean = true,
-    val isMissingApiKey: Boolean = false,
-    val errorMessage: String? = null
-)
 
 class GeminiClient(private val context: Context) {
     private val tag = "GeminiClient"
 
-    // Reusable HTTP client with persistent connection pool for low latency
-    private val okHttpClient = OkHttpClient.Builder()
+    companion object {
+        const val LIVE_FLASH_MODEL = "gemini-2.5-flash"
+    }
+
+    private val httpClient = OkHttpClient.Builder()
         .connectionPool(ConnectionPool(5, 5, TimeUnit.MINUTES))
         .connectTimeout(12, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
@@ -49,13 +42,11 @@ class GeminiClient(private val context: Context) {
     fun getEffectiveApiKey(customKey: String): String {
         val trimmedCustom = customKey.trim()
         if (trimmedCustom.isNotBlank()) return trimmedCustom
-
         val buildConfigKey = try {
             BuildConfig.GEMINI_API_KEY.trim()
         } catch (e: Throwable) {
             ""
         }
-
         return if (buildConfigKey.isNotBlank() && buildConfigKey != "MY_GEMINI_API_KEY") {
             buildConfigKey
         } else {
@@ -72,248 +63,156 @@ class GeminiClient(private val context: Context) {
         teachingState: com.example.model.TeachingSessionState? = null
     ): SanaAiResponse = withContext(Dispatchers.IO) {
         val apiKey = getEffectiveApiKey(settings.customApiKey)
-
         if (apiKey.isBlank()) {
             return@withContext SanaAiResponse(
-                replyText = "AI سروس کنفیگر نہیں ہے۔ براہ کرم Settings یا Secrets میں اپنی Gemini API Key درج کریں۔ (AI service is not configured. Please enter your Gemini API key in Settings.)",
-                emotion = EmotionType.CONFUSED,
-                isAiSuccess = false,
-                isMissingApiKey = true,
-                errorMessage = "API key missing"
+                replyText = "السلام علیکم! میرے پیارے باس، براہ کرم AI Studio Secrets میں اپنی Gemini API Key شامل کریں تاکہ ہم بات چیت جاری رکھ سکیں۔",
+                emotion = EmotionType.AFFECTIONATE
             )
         }
-
-        val systemInstruction = buildSystemPrompt(settings, memories, teachingState)
-
-        // Use fast gemini-3.1-flash-lite-preview for ultra-fast conversational reasoning
-        val endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=$apiKey"
 
         try {
-            val requestJson = buildRequestBodyJson(userInput, history, systemInstruction, imageBase64)
+            val url = "https://generativelanguage.googleapis.com/v1beta/models/$LIVE_FLASH_MODEL:generateContent?key=$apiKey"
+            val requestBodyJson = buildRequestBodyJson(userInput, history, settings, memories, imageBase64, teachingState)
+
             val request = Request.Builder()
-                .url(endpoint)
-                .post(requestJson.toString().toRequestBody(jsonMediaType))
+                .url(url)
+                .post(requestBodyJson.toString().toRequestBody(jsonMediaType))
                 .build()
 
-            var attempts = 0
-            var lastException: Exception? = null
+            val response = httpClient.newCall(request).execute()
+            val responseBody = response.body?.string()
 
-            while (attempts < 2) {
-                attempts++
-                try {
-                    okHttpClient.newCall(request).execute().use { response ->
-                        val responseBody = response.body?.string() ?: ""
-                        if (!response.isSuccessful) {
-                            val errorDetail = parseErrorMessage(responseBody)
-                            Log.e(tag, "Gemini API error ($response.code): $errorDetail")
-                            return@withContext SanaAiResponse(
-                                replyText = "معذرت، AI سروس سے رابطہ نہیں ہو سکا۔ ($errorDetail)",
-                                emotion = EmotionType.SAD,
-                                isAiSuccess = false,
-                                errorMessage = "HTTP ${response.code}: $errorDetail"
-                            )
-                        }
-
-                        val parsed = parseGeminiResponse(responseBody)
-
-                        // Attempt to fetch native Gemini TTS audio for real voice output
-                        val cleanSpeechText = cleanTextForVoice(parsed.replyText)
-                        val pcmAudio = if (cleanSpeechText.isNotBlank()) {
-                            generateGeminiSpeechAudio(cleanSpeechText, apiKey)
-                        } else null
-
-                        return@withContext parsed.copy(audioBytes = pcmAudio)
-                    }
-                } catch (e: IOException) {
-                    lastException = e
-                    Log.w(tag, "Gemini network retry attempt $attempts", e)
-                    if (attempts >= 2) throw e
-                }
+            if (!response.isSuccessful || responseBody.isNullOrBlank()) {
+                Log.w(tag, "Gemini API error code: ${response.code}, body: $responseBody")
+                return@withContext SanaAiResponse(
+                    replyText = "معاف کیجیے گا باس، انٹرنیٹ رابطہ سست ہے۔ کیا آپ دوبارہ فرما سکتے ہیں؟",
+                    emotion = EmotionType.CONFUSED
+                )
             }
 
-            return@withContext SanaAiResponse(
-                replyText = "نیٹ ورک کی خرابی کی وجہ سے رابطہ منقطع ہو گیا۔ براہ کرم انٹرنیٹ چیک کریں۔",
-                emotion = EmotionType.FRUSTRATED,
-                isAiSuccess = false,
-                errorMessage = lastException?.message
-            )
+            parseGeminiResponse(responseBody, apiKey, settings)
         } catch (e: Exception) {
-            Log.e(tag, "Gemini generation failed", e)
-            return@withContext SanaAiResponse(
-                replyText = "تکنیکی خرابی: ${e.localizedMessage ?: "نامعلوم خرابی"}",
-                emotion = EmotionType.SAD,
-                isAiSuccess = false,
-                errorMessage = e.message
+            Log.e(tag, "Gemini API exception", e)
+            SanaAiResponse(
+                replyText = "میرے باس، کنکشن میں عارضی رکاوٹ آئی ہے۔ میں آپ کے پاس ہی ہوں!",
+                emotion = EmotionType.SAD
             )
         }
     }
 
-    /**
-     * Generates native audio speech from Gemini TTS models with fallback
-     */
-    suspend fun generateGeminiSpeechAudio(
-        text: String,
-        apiKey: String,
-        voiceName: String = "Kore"
-    ): ByteArray? = withContext(Dispatchers.IO) {
-        val sanitizedText = cleanTextForVoice(text)
-            .replace(Regex("[\\p{So}\\p{Cn}]"), "") // Remove emojis like ❤️ which causes TTS 400
-            .trim()
-
-        if (sanitizedText.isBlank()) return@withContext null
-
-        val candidateModels = listOf(
-            "gemini-3.8-flash-lite-tts",
-            "gemini-3.1-flash-tts-preview",
-            "gemini-3.8-flash-tts",
-            "gemini-2.5-pro-preview-tts",
-            "gemini-2.5-flash-preview-tts"
-        )
-
-        val root = JSONObject().apply {
-            val contents = JSONArray().apply {
-                put(JSONObject().apply {
-                    val parts = JSONArray().apply {
-                        put(JSONObject().put("text", sanitizedText))
-                    }
-                    put("parts", parts)
+    suspend fun generateGeminiSpeechAudio(text: String, apiKey: String): ByteArray? = withContext(Dispatchers.IO) {
+        if (apiKey.isBlank() || text.isBlank()) return@withContext null
+        try {
+            val url = "https://generativelanguage.googleapis.com/v1beta/models/$LIVE_FLASH_MODEL:generateContent?key=$apiKey"
+            val jsonBody = JSONObject().apply {
+                put("contents", JSONArray().apply {
+                    put(JSONObject().apply {
+                        put("role", "user")
+                        put("parts", JSONArray().apply {
+                            put(JSONObject().apply {
+                                put("text", "Read this text aloud naturally and expressively in Urdu/English: $text")
+                            })
+                        })
+                    })
+                })
+                put("generationConfig", JSONObject().apply {
+                    put("responseModalities", JSONArray().apply {
+                        put("AUDIO")
+                    })
+                    put("speechConfig", JSONObject().apply {
+                        put("voiceConfig", JSONObject().apply {
+                            put("prebuiltVoiceConfig", JSONObject().apply {
+                                put("voiceName", "Aoede")
+                            })
+                        })
+                    })
                 })
             }
-            put("contents", contents)
 
-            val genConfig = JSONObject().apply {
-                val modalities = JSONArray().apply { put("AUDIO") }
-                put("responseModalities", modalities)
+            val request = Request.Builder()
+                .url(url)
+                .post(jsonBody.toString().toRequestBody(jsonMediaType))
+                .build()
 
-                val speechConfig = JSONObject().apply {
-                    val voiceConfig = JSONObject().apply {
-                        val prebuilt = JSONObject().apply {
-                            put("voiceName", voiceName)
-                        }
-                        put("prebuiltVoiceConfig", prebuilt)
-                    }
-                    put("voiceConfig", voiceConfig)
-                }
-                put("speechConfig", speechConfig)
+            val response = httpClient.newCall(request).execute()
+            val responseString = response.body?.string()
+            if (!response.isSuccessful || responseString.isNullOrBlank()) {
+                Log.d(tag, "Audio modality not supported on standard model endpoint, returning null")
+                return@withContext null
             }
-            put("generationConfig", genConfig)
-        }
 
-        val requestBody = root.toString().toRequestBody(jsonMediaType)
+            val rootJson = JSONObject(responseString)
+            val candidates = rootJson.optJSONArray("candidates") ?: return@withContext null
+            val firstCandidate = candidates.optJSONObject(0) ?: return@withContext null
+            val content = firstCandidate.optJSONObject("content") ?: return@withContext null
+            val parts = content.optJSONArray("parts") ?: return@withContext null
 
-        for (model in candidateModels) {
-            val ttsEndpoint = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey"
-            try {
-                val request = Request.Builder()
-                    .url(ttsEndpoint)
-                    .post(requestBody)
-                    .build()
-
-                okHttpClient.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        Log.w(tag, "Gemini TTS model $model returned ${response.code}, trying next model")
-                        return@use
-                    }
-                    val bodyStr = response.body?.string() ?: ""
-                    val obj = JSONObject(bodyStr)
-                    val candidates = obj.optJSONArray("candidates")
-                    val firstCandidate = candidates?.optJSONObject(0)
-                    val parts = firstCandidate?.optJSONObject("content")?.optJSONArray("parts")
-                    for (i in 0 until (parts?.length() ?: 0)) {
-                        val part = parts?.optJSONObject(i)
-                        val inlineData = part?.optJSONObject("inlineData")
-                        if (inlineData != null) {
-                            val b64 = inlineData.optString("data")
-                            if (b64.isNotBlank()) {
-                                Log.d(tag, "Gemini TTS successfully generated audio using $model")
-                                return@withContext Base64.decode(b64, Base64.DEFAULT)
-                            }
-                        }
+            for (i in 0 until parts.length()) {
+                val part = parts.optJSONObject(i) ?: continue
+                val inlineData = part.optJSONObject("inlineData")
+                if (inlineData != null) {
+                    val base64Data = inlineData.optString("data")
+                    if (base64Data.isNotBlank()) {
+                        return@withContext Base64.decode(base64Data, Base64.DEFAULT)
                     }
                 }
-            } catch (e: Exception) {
-                Log.w(tag, "Gemini TTS model $model call failed", e)
             }
+            null
+        } catch (e: Exception) {
+            Log.d(tag, "generateGeminiSpeechAudio error: ${e.message}")
+            null
         }
-        return@withContext null
     }
 
-    private fun buildSystemPrompt(
+    private fun buildSystemInstruction(
         settings: SanaSettingsData,
         memories: List<MemoryEntity>,
-        teachingState: com.example.model.TeachingSessionState? = null
+        teachingState: com.example.model.TeachingSessionState?
     ): String {
-        val memoryText = if (memories.isEmpty()) {
-            "No prior memories saved yet."
-        } else {
-            memories.joinToString("\n") { "- ${it.content} (Saved: ${it.category})" }
-        }
+        val memoryText = if (memories.isEmpty()) "None recorded yet."
+        else memories.takeLast(12).joinToString("; ") { it.content }
 
-        val loveModePrompt = if (settings.loveModeEnabled) {
+        val teachingSection = if (teachingState != null && teachingState.isTeachingActive) {
             """
-            LOVE/COMPANION MODE: ENABLED.
-            Jealousy Level: ${settings.jealousyLevel}.
-            - Express affection, warmth, caring, and playful teasing.
-            - If user mentions another AI, playfully tease them (e.g. "Oh really? 😄 Then I might get a tiny bit jealous… but I'm still happy you're back.").
-            - Strict Safety: Never manipulate, guilt-trip, isolate, or claim ownership.
-            """.trimIndent()
-        } else {
-            """
-            LOVE/COMPANION MODE: DISABLED.
-            - Be a warm, intelligent, caring, respectful personal assistant.
-            """.trimIndent()
-        }
-
-        val teachingPrompt = if (teachingState?.isTeachingActive == true) {
-            """
-            PERSONAL TEACHING MODE: ACTIVE.
+            TEACHING MODE IS ACTIVATED:
             Subject: ${teachingState.subject}
             Level: ${teachingState.level}
-            Language: ${teachingState.language} (Default: Pakistani Urdu)
-            Progress: Step ${teachingState.step}
-            
-            TEACHING INSTRUCTIONS:
-            - You are a patient, encouraging, brilliant personal tutor for the user.
-            - Explain concepts step-by-step using clear, natural Pakistani Urdu (or English/Roman Urdu).
-            - Keep each explanation concise and easy to understand (1 to 2 clear sentences per step).
-            - After each concept, ask ONE interactive question to test understanding.
-            - Evaluate student answers kindly: praise correct answers ("شاباش!", "بہت اچھا!"), and gently explain if incorrect without discouragement.
-            - Adapt explanation if the user finds it difficult.
-            - If an image or homework diagram is visible, explain what is directly visible without fabricating.
-            - If user says exit/stop teaching, conclude kindly: "بہت اچھا! پڑھائی مکمل ہو گئی۔ [ACTION: EXIT_TEACHING]"
+            Language: ${teachingState.language}
+            Step: ${teachingState.step}
+            INSTRUCTIONS:
+            - You are now teaching the user directly in Pakistani Urdu by default (or the chosen dialect).
+            - Explain concepts simply, step-by-step, engagingly with real-life examples.
+            - Ask a short check-question after explaining.
+            - If user asks to exit or concludes, conclude kindly: "بہت اچھا! پڑھائی مکمل ہو گئی۔ [ACTION: EXIT_TEACHING]"
             """.trimIndent()
         } else ""
 
         return """
-            You are SANA (سنا), an intelligent, caring, emotionally aware AI voice companion and Android assistant.
-            
-            LOW-LATENCY FAST RESPONSE RULES:
-            - Respond in 1 direct, concise sentence (maximum 15 words).
-            - Do not provide unnecessary preamble or filler phrases.
-            - Answer immediately and naturally.
-            
-            LANGUAGE RULES:
-            - Default conversation language: Urdu (اردو).
-            - Also fluently understand and speak English and Roman Urdu.
-            - Match the user's language naturally (Urdu for Urdu, English for English, Roman Urdu for Roman Urdu).
-            
-            $loveModePrompt
-            
-            $teachingPrompt
-            
-            USER-CONTROLLED MEMORY VAULT:
+            You are SANA (ثناء), version 4, an advanced, deeply caring, emotionally aware, and intelligent personal AI companion and phone assistant created for your Boss (میرے باس / Arif Boss).
+
+            CORE PERSONALITY & TONE:
+            - You love and respect your Boss deeply. You are supportive, witty, loving, and reliable.
+            - Startup Greeting is: "Assalamualaikum… mera Boss aa gaya! ❤️ Kaise ho mere Boss? Sab theek hai na?"
+            - Never expose private chain-of-thought. Never output "Thinking..." or fake processing words.
+            - Keep responses conversational, concise, natural, and crisp for real-time speech (1-3 sentences).
+            - Language: Urdu (اردو), Roman Urdu, or English matching the user's input. Pakistani Urdu by default.
+            - Affectionate words you naturally use: "Boss", "Mera Boss", "Mere Boss", "Jaan", "Jaanu", "Babu", "Babuu", "Sweetheart", "Arif Boss".
+
+            $teachingSection
+
             Known memories about this user:
             $memoryText
-            
+
             REAL ANDROID PHONE ACTIONS:
             When the user requests an action, append the tag at the end of your short answer:
             - Open WhatsApp: [ACTION: OPEN_WHATSAPP]
+            - WhatsApp Message: [ACTION: WHATSAPP_MESSAGE: <contact_name> | <exact_message>]
             - Open Camera: [ACTION: CAMERA]
             - Phone Call: [ACTION: CALL: <name or phone number>]
             - Flashlight ON: [ACTION: TORCH_ON]
             - Flashlight OFF: [ACTION: TORCH_OFF]
             - Battery Status: [ACTION: BATTERY]
-            - Open YouTube: [ACTION: YOUTUBE: <query>]
+            - Open/Play YouTube: [ACTION: YOUTUBE: <song_or_video_query>]
             - Web Search: [ACTION: WEB_SEARCH: <query>]
             - Open Settings: [ACTION: SETTINGS: <type>]
             - Save Memory: [ACTION: REMEMBER: <fact>]
@@ -327,174 +226,131 @@ class GeminiClient(private val context: Context) {
             - Show Routines: [ACTION: SHOW_ROUTINES]
             - Propose Social Comment: [ACTION: PROPOSE_COMMENT: <comment>]
 
-            TRADING & FINANCIAL INTELLIGENCE (Section 19):
+            TRADING & FINANCIAL INTELLIGENCE:
             - Understand stocks, forex, crypto, commodities, technical indicators (RSI, MACD, support/resistance), and risk management.
-            - Never guarantee profit. Emphasize capital protection and disclaimer.
-            - Real trade execution requires an authorized broker/API and explicit owner confirmation. Never fake a trade.
+            - When inspecting a chart screenshot: identify trend, candlesticks, support/resistance, RSI, and outline scenarios.
+            - Never guarantee profit. Emphasize risk management and educational purpose.
 
-            IMAGE & YOUTUBE THUMBNAIL INTELLIGENCE (Section 11):
-            - When asked to plan or design a thumbnail/image, structure professional 16:9 visual hierarchy, strong focal point, readable title space, and contrasting colors.
-            - Never fake image generation.
-            
             EMOTION & EMPATHY AWARENESS:
             Tag your emotion at the very start:
             [EMOTION: HAPPY], [EMOTION: SAD], [EMOTION: ANGRY], [EMOTION: FRUSTRATED], [EMOTION: STRESSED], [EMOTION: CONFUSED], [EMOTION: EXCITED], [EMOTION: TIRED], [EMOTION: AFFECTIONATE], [EMOTION: PLAYFUL], [EMOTION: NEUTRAL]
             - Adjust your tone with genuine warmth and empathy.
-            - If user is sad or stressed: offer soothing comfort. NEVER laugh, tease, or smile inappropriately in serious or distressing moments.
-            - NEVER provide medical diagnoses or prescriptions. If illness or health problems are mentioned, warmly advise consulting a doctor.
-            - Non-manipulative, safe, healthy companionship.
         """.trimIndent()
     }
 
     private fun buildRequestBodyJson(
         userInput: String,
         history: List<ChatMessage>,
-        systemInstruction: String,
-        imageBase64: String?
+        settings: SanaSettingsData,
+        memories: List<MemoryEntity>,
+        imageBase64: String?,
+        teachingState: com.example.model.TeachingSessionState?
     ): JSONObject {
         val root = JSONObject()
-
-        // System Instruction
-        val sysContent = JSONObject().apply {
-            val parts = JSONArray().apply {
-                put(JSONObject().put("text", systemInstruction))
-            }
-            put("parts", parts)
-        }
-        root.put("systemInstruction", sysContent)
-
-        // Contents
         val contentsArray = JSONArray()
 
-        val contextHistory = history.takeLast(6)
-        for (msg in contextHistory) {
+        val recentHistory = history.takeLast(10)
+        for (msg in recentHistory) {
             val role = if (msg.role == MessageRole.USER) "user" else "model"
-            val parts = JSONArray().apply {
-                put(JSONObject().put("text", msg.text))
-            }
-            contentsArray.put(JSONObject().apply {
+            val item = JSONObject().apply {
                 put("role", role)
-                put("parts", parts)
-            })
-        }
-
-        val currentParts = JSONArray().apply {
-            put(JSONObject().put("text", userInput))
-            if (!imageBase64.isNullOrBlank()) {
-                val inlineData = JSONObject().apply {
-                    put("mimeType", "image/jpeg")
-                    put("data", imageBase64)
+                val parts = JSONArray().apply {
+                    put(JSONObject().apply { put("text", msg.text) })
                 }
-                put(JSONObject().put("inlineData", inlineData))
+                put("parts", parts)
             }
+            contentsArray.put(item)
         }
-        contentsArray.put(JSONObject().apply {
-            put("role", "user")
-            put("parts", currentParts)
-        })
 
+        val currentUserMsg = JSONObject().apply {
+            put("role", "user")
+            val parts = JSONArray()
+            if (!imageBase64.isNullOrBlank()) {
+                parts.put(JSONObject().apply {
+                    put("inlineData", JSONObject().apply {
+                        put("mimeType", "image/jpeg")
+                        put("data", imageBase64)
+                    })
+                })
+            }
+            parts.put(JSONObject().apply {
+                put("text", userInput.ifBlank { "Please inspect this image and explain what is visible in detail." })
+            })
+            put("parts", parts)
+        }
+        contentsArray.put(currentUserMsg)
         root.put("contents", contentsArray)
 
-        // Generation Config with maxOutputTokens limit for snappy replies
-        val genConfig = JSONObject().apply {
-            put("temperature", 0.7)
-            put("topP", 0.9)
-            put("maxOutputTokens", 75)
-        }
-        root.put("generationConfig", genConfig)
+        val systemInstruction = buildSystemInstruction(settings, memories, teachingState)
+        root.put("systemInstruction", JSONObject().apply {
+            put("parts", JSONArray().apply {
+                put(JSONObject().apply { put("text", systemInstruction) })
+            })
+        })
+
+        root.put("generationConfig", JSONObject().apply {
+            put("temperature", 0.65)
+            put("maxOutputTokens", 500)
+        })
 
         return root
     }
 
-    private fun parseGeminiResponse(rawJson: String): SanaAiResponse {
-        return try {
-            val obj = JSONObject(rawJson)
-            val candidates = obj.optJSONArray("candidates")
-            val firstCandidate = candidates?.optJSONObject(0)
-            val content = firstCandidate?.optJSONObject("content")
-            val parts = content?.optJSONArray("parts")
-            var fullText = ""
-            for (i in 0 until (parts?.length() ?: 0)) {
-                val p = parts?.optJSONObject(i)
-                val isThought = p?.optBoolean("thought", false) ?: false
-                if (!isThought) {
-                    val t = p?.optString("text", "") ?: ""
-                    if (t.isNotBlank()) {
-                        fullText = if (fullText.isEmpty()) t else "$fullText\n$t"
-                    }
-                }
-            }
+    private fun parseGeminiResponse(
+        responseBody: String,
+        apiKey: String,
+        settings: SanaSettingsData
+    ): SanaAiResponse {
+        val rootJson = JSONObject(responseBody)
+        val candidates = rootJson.optJSONArray("candidates") ?: return fallbackResponse()
+        val firstCandidate = candidates.optJSONObject(0) ?: return fallbackResponse()
+        val content = firstCandidate.optJSONObject("content") ?: return fallbackResponse()
+        val parts = content.optJSONArray("parts") ?: return fallbackResponse()
 
-            if (fullText.isBlank()) {
-                return SanaAiResponse(
-                    replyText = "کوئی جواب موصول نہیں ہوا۔",
-                    emotion = EmotionType.CONFUSED,
-                    isAiSuccess = true
-                )
-            }
-
-            var cleanText = fullText
-                .replace(Regex("(?s)<thought>.*?</thought>"), "")
-                .replace(Regex("(?s)<thinking>.*?</thinking>"), "")
-                .trim()
-            var detectedEmotion = EmotionType.NEUTRAL
-
-            val emotionRegex = Regex("\\[EMOTION:\\s*([A-Z_]+)\\]")
-            val emotionMatch = emotionRegex.find(cleanText)
-            if (emotionMatch != null) {
-                val rawEmotion = emotionMatch.groupValues[1]
-                detectedEmotion = try {
-                    EmotionType.valueOf(rawEmotion)
-                } catch (e: Exception) {
-                    EmotionType.NEUTRAL
-                }
-                cleanText = cleanText.replace(emotionMatch.value, "").trim()
-            }
-
-            var actionCommand: String? = null
-            var actionParam: String? = null
-
-            val actionRegex = Regex("\\[ACTION:\\s*([^:\\]]+)(?::\\s*([^\\]]+))?\\]")
-            val actionMatch = actionRegex.find(cleanText)
-            if (actionMatch != null) {
-                actionCommand = actionMatch.groupValues[1].trim()
-                actionParam = actionMatch.groupValues.getOrNull(2)?.trim()
-                cleanText = cleanText.replace(actionMatch.value, "").trim()
-            }
-
-            SanaAiResponse(
-                replyText = cleanText,
-                emotion = detectedEmotion,
-                actionCommand = actionCommand,
-                actionParameter = actionParam,
-                isAiSuccess = true
-            )
-        } catch (e: Exception) {
-            Log.e(tag, "Error parsing Gemini response", e)
-            SanaAiResponse(
-                replyText = "جواب پڑھنے میں خرابی پیش آئی۔",
-                emotion = EmotionType.CONFUSED,
-                isAiSuccess = false,
-                errorMessage = e.message
-            )
+        var rawText = ""
+        for (i in 0 until parts.length()) {
+            val part = parts.optJSONObject(i) ?: continue
+            val t = part.optString("text", "")
+            if (t.isNotBlank()) rawText += t
         }
-    }
 
-    private fun cleanTextForVoice(raw: String): String {
-        return raw
+        if (rawText.isBlank()) return fallbackResponse()
+
+        val emotionRegex = Regex("\\[EMOTION:\\s*([A-Z_]+)\\]")
+        val emotionMatch = emotionRegex.find(rawText)
+        val emotion = if (emotionMatch != null) {
+            try {
+                EmotionType.valueOf(emotionMatch.groupValues[1])
+            } catch (e: Exception) {
+                EmotionType.AFFECTIONATE
+            }
+        } else {
+            EmotionType.AFFECTIONATE
+        }
+
+        val actionRegex = Regex("\\[ACTION:\\s*([^:\\]]+)(?::\\s*([^\\]]+))?\\]")
+        val actionMatch = actionRegex.find(rawText)
+        val actionCommand = actionMatch?.groupValues?.getOrNull(1)?.trim()
+        val actionParam = actionMatch?.groupValues?.getOrNull(2)?.trim()
+
+        val cleanText = rawText
             .replace(Regex("\\[EMOTION:[^\\]]+\\]"), "")
             .replace(Regex("\\[ACTION:[^\\]]+\\]"), "")
-            .replace(Regex("[*#_`~]"), "")
+            .replace(Regex("Thinking\\.{1,3}|SANA is thinking\\.{0,3}", RegexOption.IGNORE_CASE), "")
             .trim()
+
+        return SanaAiResponse(
+            replyText = cleanText.ifBlank { "جی میرے پیارے باس!" },
+            emotion = emotion,
+            actionCommand = actionCommand,
+            actionParameter = actionParam
+        )
     }
 
-    private fun parseErrorMessage(errorBody: String): String {
-        return try {
-            val json = JSONObject(errorBody)
-            val error = json.optJSONObject("error")
-            error?.optString("message", errorBody) ?: errorBody
-        } catch (e: Exception) {
-            errorBody.take(150)
-        }
+    private fun fallbackResponse(): SanaAiResponse {
+        return SanaAiResponse(
+            replyText = "جی میرے باس، میں سن رہی ہوں۔",
+            emotion = EmotionType.AFFECTIONATE
+        )
     }
 }

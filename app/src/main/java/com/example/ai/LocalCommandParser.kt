@@ -6,17 +6,32 @@ data class LocalParsedCommand(
     val matched: Boolean,
     val command: String? = null,
     val parameter: String? = null,
+    val secondParameter: String? = null,
     val spokenResponse: String? = null,
     val emotion: EmotionType = EmotionType.NEUTRAL
 )
 
 object LocalCommandParser {
-
     fun parse(input: String): LocalParsedCommand {
         val lower = input.trim().lowercase()
 
-        // 1. WhatsApp
+        // 1. WhatsApp Message vs WhatsApp Open (Section 11)
+        // e.g.: "WhatsApp par Ali ko message bhejo: Main aa raha hoon"
         if (lower.contains("whatsapp") || lower.contains("واٹس ایپ")) {
+            val messageMatch = Regex("(?i)(?:par|pe|ko)?\\s*([a-zA-Z0-9_+\\-]+)\\s*(?:ko)?\\s*(?:message|msg|paigham|پیغام)\\s*(?:bhejo|karo|send karo|send|بھیجو)[:\\s]+(.+)").find(input)
+            if (messageMatch != null) {
+                val contact = messageMatch.groupValues[1].trim()
+                val messageText = messageMatch.groupValues[2].trim()
+                return LocalParsedCommand(
+                    matched = true,
+                    command = "WHATSAPP_MESSAGE",
+                    parameter = contact,
+                    secondParameter = messageText,
+                    spokenResponse = "واٹس ایپ پر $contact کے لیے پیغام تیار کر کے کھول دیا ہے۔ (Opening WhatsApp message for $contact.)",
+                    emotion = EmotionType.HAPPY
+                )
+            }
+
             return LocalParsedCommand(
                 matched = true,
                 command = "OPEN_WHATSAPP",
@@ -67,14 +82,28 @@ object LocalCommandParser {
             )
         }
 
-        // 6. YouTube
+        // 6. YouTube Search & Playback (Section 12)
+        // e.g. "YouTube par koi gana chalao", "YouTube par Atif Aslam ka gana chalao"
         if (lower.contains("youtube") || lower.contains("یوٹیوب")) {
-            val query = lower.replace("youtube", "").replace("یوٹیوب", "").replace("kholo", "").replace("open", "").trim()
+            val query = lower
+                .replace("youtube", "")
+                .replace("یوٹیوب", "")
+                .replace("kholo", "")
+                .replace("open", "")
+                .replace("par", "")
+                .replace("pe", "")
+                .replace("chalao", "")
+                .replace("play karo", "")
+                .replace("play", "")
+                .replace("lagao", "")
+                .trim()
+
+            val speech = if (query.isNotBlank()) "یوٹیوب پر تلاش کر کے گانا چلایا جا رہا ہے۔" else "یوٹیوب کھول دیا ہے۔"
             return LocalParsedCommand(
                 matched = true,
                 command = "YOUTUBE",
                 parameter = query.ifBlank { null },
-                spokenResponse = "یوٹیوب کھول دیا ہے۔",
+                spokenResponse = speech,
                 emotion = EmotionType.HAPPY
             )
         }
@@ -152,7 +181,6 @@ object LocalCommandParser {
                 emotion = EmotionType.HAPPY
             )
         }
-
         if (lower.contains("disarm anti-theft") || lower.contains("disarm anti theft") || lower.contains("chori se bachao band") || lower.contains("چوری سے بچاؤ بند")) {
             return LocalParsedCommand(
                 matched = true,
@@ -178,6 +206,16 @@ object LocalCommandParser {
                 matched = true,
                 command = "SHOW_ROUTINES",
                 spokenResponse = "آپ کی تمام آٹومیشن روٹینز کھل رہی ہیں۔",
+                emotion = EmotionType.HAPPY
+            )
+        }
+
+        // 13. Trading Chart Scan
+        if (lower.contains("trading chart") || lower.contains("chart scan") || lower.contains("چارٹ اسکین")) {
+            return LocalParsedCommand(
+                matched = true,
+                command = "OPEN_TRADING",
+                spokenResponse = "ٹریڈنگ چارٹ اسکین کھل رہا ہے۔ کیمرا چارٹ کے سامنے رکھیں۔",
                 emotion = EmotionType.HAPPY
             )
         }

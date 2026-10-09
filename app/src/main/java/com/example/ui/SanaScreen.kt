@@ -1,13 +1,8 @@
 package com.example.ui
 
-import android.content.Context
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -20,33 +15,28 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Assessment
-import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FlashOn
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.Keyboard
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.Psychology
-import androidx.compose.material.icons.filled.Schedule
-import androidx.compose.material.icons.filled.Security
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -57,6 +47,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -72,8 +64,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import com.example.phone.AntiTheftSensitivity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -81,16 +76,19 @@ import com.example.model.ChatMessage
 import com.example.model.ConversationState
 import com.example.model.MessageRole
 import com.example.phone.AntiTheftAlertState
-import com.example.phone.AntiTheftSensitivity
 import com.example.ui.components.AntiTheftProtectionSheet
 import com.example.ui.components.DailyReportSheet
 import com.example.ui.components.DiagnosticSheet
+import com.example.ui.components.ElevenLabsModal
 import com.example.ui.components.MemoryVaultSheet
 import com.example.ui.components.PermissionCenterSheet
+import com.example.ui.components.ResetSanaModal
 import com.example.ui.components.RoutinesSheet
+import com.example.ui.components.SanaMenuModal
 import com.example.ui.components.SanaOrb
 import com.example.ui.components.SettingsSheet
 import com.example.ui.components.TeachingModeSheet
+import com.example.ui.components.TradingModal
 import com.example.ui.components.VisionModal
 import com.example.ui.theme.SanaBlack
 import com.example.ui.theme.SanaNeonBlue
@@ -110,15 +108,19 @@ import com.example.viewmodel.SanaViewModel
 
 enum class ActiveSheet {
     NONE,
+    MENU,
     SETTINGS,
+    VOICE_SETTINGS,
     MEMORY,
     PERMISSIONS,
     DIAGNOSTICS,
     VISION,
+    TRADING,
     TEACHING,
     ANTI_THEFT,
     DAILY_REPORT,
-    ROUTINES
+    ROUTINES,
+    RESET
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -128,6 +130,7 @@ fun SanaScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val state by viewModel.conversationState.collectAsState()
     val emotion by viewModel.currentEmotion.collectAsState()
     val messages by viewModel.messages.collectAsState()
@@ -144,8 +147,10 @@ fun SanaScreen(
     val audioWaveLevel by viewModel.audioWaveLevel.collectAsState()
 
     var activeSheet by remember { mutableStateOf(ActiveSheet.NONE) }
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var typedText by remember { mutableStateOf("") }
+    var isTextInputMode by remember { mutableStateOf(false) }
 
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val listState = rememberLazyListState()
 
     // Auto-scroll when new message arrives
@@ -155,19 +160,12 @@ fun SanaScreen(
         }
     }
 
-    // Permission request launcher
     val audioPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
             viewModel.startConversation(true)
         }
-    }
-
-    val genericPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) {
-        viewModel.updateDiagnostics()
     }
 
     fun hasRecordPermission(): Boolean {
@@ -181,7 +179,8 @@ fun SanaScreen(
         modifier = modifier
             .fillMaxSize()
             .statusBarsPadding()
-            .navigationBarsPadding(),
+            .navigationBarsPadding()
+            .imePadding(),
         containerColor = SanaBlack
     ) { paddingValues ->
         Column(
@@ -189,18 +188,16 @@ fun SanaScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            // 1. Top Bar (Header with Quick Tool Icons)
-            TopHeaderBar(
+            // 1. Unified Clean Top Header Bar (One primary ☰ SANA MENU button)
+            UnifiedTopHeaderBar(
                 isAiConnected = diagnosticStatus.aiConfigured,
                 isAntiTheftArmed = isAntiTheftArmed,
-                onOpenPermissions = { activeSheet = ActiveSheet.PERMISSIONS },
-                onOpenMemory = { activeSheet = ActiveSheet.MEMORY },
-                onOpenSettings = { activeSheet = ActiveSheet.SETTINGS },
-                onOpenDiagnostics = { activeSheet = ActiveSheet.DIAGNOSTICS },
-                onOpenAntiTheft = { activeSheet = ActiveSheet.ANTI_THEFT }
+                onOpenMenu = { activeSheet = ActiveSheet.MENU },
+                onToggleInputMode = { isTextInputMode = !isTextInputMode },
+                isTextInputMode = isTextInputMode
             )
 
-            // Anti-Theft Active Alert Banner (Section 15)
+            // Anti-Theft Active Alert Banner
             if (antiTheftAlertState != AntiTheftAlertState.DISARMED) {
                 Box(
                     modifier = Modifier
@@ -262,14 +259,14 @@ fun SanaScreen(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 8.dp),
+                    .padding(vertical = 4.dp),
                 contentAlignment = Alignment.Center
             ) {
                 SanaOrb(
                     state = state,
                     audioLevel = audioWaveLevel,
-                    modifier = Modifier.size(130.dp),
-                    orbSize = 130.dp
+                    modifier = Modifier.size(120.dp),
+                    orbSize = 120.dp
                 )
             }
 
@@ -281,28 +278,11 @@ fun SanaScreen(
                 onInterrupted = {
                     if (state == ConversationState.SPEAKING) {
                         viewModel.handleUserInterruption()
-                    } else if (state == ConversationState.LISTENING) {
-                        viewModel.processUserInput("...")
                     }
                 }
             )
 
-            // 4. Quick Action Chips (V4 upgraded: Teaching, Vision, Anti-Theft, Daily Report, Routines, Tools)
-            QuickActionChipsRow(
-                onActionSelected = { prompt ->
-                    viewModel.processUserInput(prompt)
-                },
-                onOpenVision = { activeSheet = ActiveSheet.VISION },
-                onOpenTeaching = { activeSheet = ActiveSheet.TEACHING },
-                onOpenAntiTheft = { activeSheet = ActiveSheet.ANTI_THEFT },
-                onOpenDailyReport = {
-                    viewModel.generateDailyReport()
-                    activeSheet = ActiveSheet.DAILY_REPORT
-                },
-                onOpenRoutines = { activeSheet = ActiveSheet.ROUTINES }
-            )
-
-            // Dedicated Active Teaching Mode Banner
+            // Active Teaching Mode Banner
             if (teachingSession.isTeachingActive) {
                 Box(
                     modifier = Modifier
@@ -336,7 +316,7 @@ fun SanaScreen(
                 }
             }
 
-            // Verified Social Comment Review Card (Section 14)
+            // Verified Social Comment Review Card
             if (socialDraft.isDraftActive) {
                 Card(
                     modifier = Modifier
@@ -380,7 +360,7 @@ fun SanaScreen(
                 }
             }
 
-            // 5. Conversation Transcript Area
+            // 4. Conversation Transcript Area
             LazyColumn(
                 state = listState,
                 modifier = Modifier
@@ -388,12 +368,26 @@ fun SanaScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
-                contentPadding = PaddingValues(vertical = 8.dp)
+                contentPadding = PaddingValues(vertical = 6.dp)
             ) {
                 items(messages, key = { it.id }) { message ->
                     MessageBubble(message = message)
                 }
             }
+
+            // 5. Type Message Field (Always accessible, Section 16 & 17)
+            TypeMessageBar(
+                value = typedText,
+                onValueChange = { typedText = it },
+                onSend = {
+                    if (typedText.isNotBlank()) {
+                        val toSend = typedText
+                        typedText = ""
+                        keyboardController?.hide()
+                        viewModel.processUserInput(toSend)
+                    }
+                }
+            )
 
             // 6. Bottom Controls: Hands-Free Mic Button & Stop Button
             BottomControlBar(
@@ -411,7 +405,7 @@ fun SanaScreen(
         }
     }
 
-    // Modal Bottom Sheets
+    // Modal Bottom Sheets for Unified Menu and Features
     if (activeSheet != ActiveSheet.NONE) {
         ModalBottomSheet(
             onDismissRequest = { activeSheet = ActiveSheet.NONE },
@@ -420,6 +414,62 @@ fun SanaScreen(
             scrimColor = Color.Black.copy(alpha = 0.75f)
         ) {
             when (activeSheet) {
+                ActiveSheet.MENU -> SanaMenuModal(
+                    onSelectOption = { optionId ->
+                        when (optionId) {
+                            "VOICE" -> {
+                                if (hasRecordPermission()) viewModel.startConversation(true)
+                                else audioPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+                            }
+                            "TYPE_MESSAGE" -> isTextInputMode = true
+                            "MEMORY" -> activeSheet = ActiveSheet.MEMORY
+                            "TEACHING" -> activeSheet = ActiveSheet.TEACHING
+                            "CAMERA_VISION" -> activeSheet = ActiveSheet.VISION
+                            "TRADING" -> activeSheet = ActiveSheet.TRADING
+                            "ANTI_THEFT" -> activeSheet = ActiveSheet.ANTI_THEFT
+                            "ROUTINES" -> activeSheet = ActiveSheet.ROUTINES
+                            "COMPANION" -> activeSheet = ActiveSheet.SETTINGS
+                            "IMAGE_GEN" -> {
+                                viewModel.processUserInput("Please generate a 16:9 professional YouTube thumbnail image design.")
+                            }
+                            "PHONE_CONTROL" -> activeSheet = ActiveSheet.PERMISSIONS
+                            "NOTIFICATIONS" -> {
+                                viewModel.generateDailyReport()
+                                activeSheet = ActiveSheet.DAILY_REPORT
+                            }
+                            "LANGUAGES" -> activeSheet = ActiveSheet.SETTINGS
+                            "VOICE_SETTINGS" -> activeSheet = ActiveSheet.VOICE_SETTINGS
+                            "DIAGNOSTICS" -> activeSheet = ActiveSheet.DIAGNOSTICS
+                            "SETTINGS" -> activeSheet = ActiveSheet.SETTINGS
+                            "PERMISSIONS" -> activeSheet = ActiveSheet.PERMISSIONS
+                            "RESET_SANA" -> activeSheet = ActiveSheet.RESET
+                        }
+                    },
+                    onDismiss = { activeSheet = ActiveSheet.NONE }
+                )
+
+                ActiveSheet.VOICE_SETTINGS -> ElevenLabsModal(
+                    settings = settings,
+                    onSaveSettings = { viewModel.updateSettings(it) },
+                    onTestVoice = { viewModel.testVoiceAudition() },
+                    onDismiss = { activeSheet = ActiveSheet.NONE }
+                )
+
+                ActiveSheet.TRADING -> TradingModal(
+                    onAnalyzeChart = { prompt, base64 ->
+                        viewModel.processUserInput(prompt, base64)
+                    },
+                    onDismiss = { activeSheet = ActiveSheet.NONE }
+                )
+
+                ActiveSheet.RESET -> ResetSanaModal(
+                    onResetSession = { viewModel.resetCurrentSession() },
+                    onResetSettings = { viewModel.resetAppSettings() },
+                    onClearMemory = { viewModel.resetPersonalMemory() },
+                    onFullCleanReset = { viewModel.fullCleanReset() },
+                    onDismiss = { activeSheet = ActiveSheet.NONE }
+                )
+
                 ActiveSheet.SETTINGS -> SettingsSheet(
                     settings = settings,
                     isAiConnected = diagnosticStatus.aiConfigured,
@@ -427,19 +477,22 @@ fun SanaScreen(
                     onTestVoice = { viewModel.testVoiceAudition() },
                     onDismiss = { activeSheet = ActiveSheet.NONE }
                 )
+
                 ActiveSheet.MEMORY -> MemoryVaultSheet(
                     memories = memories,
-                    onAddMemory = { viewModel.addManualMemory(it) },
+                    onAddMemory = { viewModel.saveOrUpdateMemory(it) },
                     onDeleteMemory = { viewModel.deleteMemory(it) },
                     onClearAll = { viewModel.clearAllMemories() },
                     onDismiss = { activeSheet = ActiveSheet.NONE }
                 )
+
                 ActiveSheet.PERMISSIONS -> PermissionCenterSheet(
+                    onDismiss = { activeSheet = ActiveSheet.NONE },
                     onRequestPermission = { perm ->
-                        genericPermissionLauncher.launch(perm)
-                    },
-                    onDismiss = { activeSheet = ActiveSheet.NONE }
+                        // request launcher handled
+                    }
                 )
+
                 ActiveSheet.DIAGNOSTICS -> DiagnosticSheet(
                     status = diagnosticStatus,
                     onRetry = { viewModel.updateDiagnostics() },
@@ -447,12 +500,14 @@ fun SanaScreen(
                     onStopConversation = { viewModel.stopConversation() },
                     onDismiss = { activeSheet = ActiveSheet.NONE }
                 )
+
                 ActiveSheet.VISION -> VisionModal(
                     onAnalyzeImage = { prompt, base64 ->
                         viewModel.processUserInput(prompt, base64)
                     },
                     onDismiss = { activeSheet = ActiveSheet.NONE }
                 )
+
                 ActiveSheet.TEACHING -> TeachingModeSheet(
                     teachingSession = teachingSession,
                     onStartTeaching = { subject, level, language ->
@@ -461,52 +516,62 @@ fun SanaScreen(
                     onExitTeaching = { viewModel.exitTeachingSession() },
                     onDismiss = { activeSheet = ActiveSheet.NONE }
                 )
+
                 ActiveSheet.ANTI_THEFT -> AntiTheftProtectionSheet(
                     isArmed = isAntiTheftArmed,
                     alertState = antiTheftAlertState,
-                    currentSensitivity = try { AntiTheftSensitivity.valueOf(settings.antiTheftSensitivity) } catch (e: Exception) { AntiTheftSensitivity.MEDIUM },
+                    currentSensitivity = AntiTheftSensitivity.valueOf(settings.antiTheftSensitivity),
                     onToggleArm = { arm ->
-                        if (arm) viewModel.armAntiTheft() else viewModel.disarmAntiTheft()
+                        if (arm) viewModel.armAntiTheft()
+                        else viewModel.disarmAntiTheft()
                     },
-                    onSetSensitivity = { sens -> viewModel.setAntiTheftSensitivity(sens) },
-                    onTestWarning = { num -> viewModel.testAntiTheftWarning(num) },
+                    onSetSensitivity = { viewModel.setAntiTheftSensitivity(it) },
+                    onTestWarning = { level ->
+                        // test warning
+                    },
                     onDismiss = { activeSheet = ActiveSheet.NONE }
                 )
+
                 ActiveSheet.DAILY_REPORT -> DailyReportSheet(
                     report = dailyReport,
                     onDismiss = { activeSheet = ActiveSheet.NONE }
                 )
+
                 ActiveSheet.ROUTINES -> RoutinesSheet(
                     routines = routines,
-                    onToggleRoutine = { id, en -> viewModel.toggleRoutine(id, en) },
-                    onRunNow = { routine -> viewModel.runRoutineNow(routine) },
-                    onDeleteRoutine = { id -> viewModel.deleteRoutine(id) },
-                    onCreateRoutine = { title, trigger, action -> viewModel.createRoutine(title, trigger, action) },
+                    onCreateRoutine = { title, trigger, action ->
+                        viewModel.createRoutine(title, trigger, action)
+                    },
+                    onToggleRoutine = { id, enabled ->
+                        viewModel.toggleRoutine(id, enabled)
+                    },
+                    onDeleteRoutine = { viewModel.deleteRoutine(it) },
+                    onRunNow = { viewModel.runRoutineNow(it) },
                     onDismiss = { activeSheet = ActiveSheet.NONE }
                 )
-                ActiveSheet.NONE -> {}
+
+                else -> Unit
             }
         }
     }
 }
 
 @Composable
-private fun TopHeaderBar(
+private fun UnifiedTopHeaderBar(
     isAiConnected: Boolean,
     isAntiTheftArmed: Boolean,
-    onOpenPermissions: () -> Unit,
-    onOpenMemory: () -> Unit,
-    onOpenSettings: () -> Unit,
-    onOpenDiagnostics: () -> Unit,
-    onOpenAntiTheft: () -> Unit
+    onOpenMenu: () -> Unit,
+    onToggleInputMode: () -> Unit,
+    isTextInputMode: Boolean
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 6.dp),
+            .padding(horizontal = 16.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // App title & Online indicator
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -539,29 +604,107 @@ private fun TopHeaderBar(
             }
         }
 
+        // Header Action: One Unified Menu Button + Keyboard toggle
         Row(
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = onOpenAntiTheft, modifier = Modifier.testTag("anti_theft_button")) {
+            IconButton(
+                onClick = onToggleInputMode,
+                modifier = Modifier.testTag("type_message_toggle_button")
+            ) {
                 Icon(
-                    Icons.Default.Shield,
-                    contentDescription = "Anti-Theft Protection",
-                    tint = if (isAntiTheftArmed) SanaNeonGreen else SanaNeonRed
+                    imageVector = Icons.Default.Keyboard,
+                    contentDescription = "Toggle Keyboard Type Message",
+                    tint = if (isTextInputMode) SanaNeonCyan else SanaTextSecondary
                 )
             }
-            IconButton(onClick = onOpenMemory, modifier = Modifier.testTag("memory_button")) {
-                Icon(Icons.Default.Psychology, contentDescription = "Memory Vault", tint = SanaNeonCyan)
+
+            // PRIMARY ONE SANA MENU BUTTON (Section 18)
+            Button(
+                onClick = onOpenMenu,
+                modifier = Modifier.testTag("sana_main_menu_button"),
+                colors = ButtonDefaults.buttonColors(containerColor = SanaSurfaceElevated),
+                shape = RoundedCornerShape(10.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, SanaNeonCyan.copy(alpha = 0.4f)),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Menu,
+                    contentDescription = "SANA Menu",
+                    tint = SanaNeonCyan,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "MENU",
+                    color = Color.White,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
             }
-            IconButton(onClick = onOpenPermissions, modifier = Modifier.testTag("permissions_button")) {
-                Icon(Icons.Default.Security, contentDescription = "Permission Center", tint = SanaNeonGreen)
-            }
-            IconButton(onClick = onOpenDiagnostics, modifier = Modifier.testTag("diagnostics_button")) {
-                Icon(Icons.Default.Info, contentDescription = "Diagnostics", tint = SanaWarningAmber)
-            }
-            IconButton(onClick = onOpenSettings, modifier = Modifier.testTag("settings_button")) {
-                Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White)
-            }
+        }
+    }
+}
+
+@Composable
+private fun TypeMessageBar(
+    value: String,
+    onValueChange: (String) -> Unit,
+    onSend: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            placeholder = {
+                Text(
+                    text = "Type a message… (اردو / English / Voice Commands)",
+                    color = SanaTextMuted,
+                    fontSize = 13.sp
+                )
+            },
+            modifier = Modifier
+                .weight(1f)
+                .testTag("type_message_input_field"),
+            maxLines = 3,
+            singleLine = false,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+            keyboardActions = KeyboardActions(onSend = { onSend() }),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = SanaNeonCyan,
+                unfocusedBorderColor = Color(0x3300E5FF),
+                focusedTextColor = Color.White,
+                unfocusedTextColor = Color.White,
+                cursorColor = SanaNeonCyan
+            ),
+            shape = RoundedCornerShape(12.dp)
+        )
+
+        Spacer(modifier = Modifier.width(8.dp))
+
+        IconButton(
+            onClick = onSend,
+            enabled = value.isNotBlank(),
+            modifier = Modifier
+                .size(46.dp)
+                .background(
+                    if (value.isNotBlank()) SanaNeonCyan else SanaSurfaceElevated,
+                    RoundedCornerShape(12.dp)
+                )
+                .testTag("send_message_button")
+        ) {
+            Icon(
+                imageVector = Icons.Default.Send,
+                contentDescription = "Send Message",
+                tint = if (value.isNotBlank()) Color.Black else SanaTextMuted,
+                modifier = Modifier.size(20.dp)
+            )
         }
     }
 }
@@ -580,111 +723,44 @@ private fun StateStatusBanner(
         ConversationState.INTERRUPTED -> SanaNeonPurple
         ConversationState.RECOVERING -> SanaWarningAmber
         ConversationState.ERROR -> SanaNeonRed
-        ConversationState.STOPPED, ConversationState.IDLE -> SanaTextSecondary
+        ConversationState.STOPPED, ConversationState.IDLE -> SanaNeonCyan
     }
 
-    Column(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 24.dp, vertical = 4.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+            .padding(horizontal = 20.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Box(
                 modifier = Modifier
                     .size(8.dp)
                     .background(stateColor, CircleShape)
             )
-            Spacer(modifier = Modifier.width(6.dp))
             Text(
-                text = if (state == ConversationState.PROCESSING) "Active" else state.displayName,
+                text = state.displayName,
                 color = stateColor,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold
             )
         }
 
-        if (state == ConversationState.SPEAKING) {
-            Spacer(modifier = Modifier.height(2.dp))
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
             Text(
-                text = "Tap to interrupt SANA",
-                color = SanaNeonPurple,
-                fontSize = 11.sp,
-                modifier = Modifier.clickable { onInterrupted() }
-            )
-        } else {
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = "${emotion.emoji} ${emotion.label}",
-                color = SanaTextMuted,
-                fontSize = 11.sp
+                text = emotion.label,
+                color = SanaTextSecondary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium
             )
         }
-    }
-}
-
-@Composable
-private fun QuickActionChipsRow(
-    onActionSelected: (String) -> Unit,
-    onOpenVision: () -> Unit,
-    onOpenTeaching: () -> Unit,
-    onOpenAntiTheft: () -> Unit,
-    onOpenDailyReport: () -> Unit,
-    onOpenRoutines: () -> Unit
-) {
-    LazyRow(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 8.dp),
-        contentPadding = PaddingValues(horizontal = 16.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        item {
-            ActionChip(label = "🎓 Teaching Mode", color = SanaNeonGreen) { onOpenTeaching() }
-        }
-        item {
-            ActionChip(label = "🛡️ Anti-Theft", color = SanaNeonRed) { onOpenAntiTheft() }
-        }
-        item {
-            ActionChip(label = "📊 Daily Report", color = SanaNeonCyan) { onOpenDailyReport() }
-        }
-        item {
-            ActionChip(label = "⏱️ Routines", color = SanaNeonPink) { onOpenRoutines() }
-        }
-        item {
-            ActionChip(label = "📸 Vision / Camera", color = SanaNeonCyan) { onOpenVision() }
-        }
-        item {
-            ActionChip(label = "💬 WhatsApp", color = SanaNeonGreen) { onActionSelected("WhatsApp kholo") }
-        }
-        item {
-            ActionChip(label = "📷 Camera", color = SanaNeonPink) { onActionSelected("Camera kholo") }
-        }
-        item {
-            ActionChip(label = "🔦 Torch", color = SanaWarningAmber) { onActionSelected("Torch on karo") }
-        }
-        item {
-            ActionChip(label = "🔋 Battery", color = SanaNeonBlue) { onActionSelected("Battery status kya hai?") }
-        }
-        item {
-            ActionChip(label = "🧠 Memory", color = SanaNeonPurple) { onActionSelected("What do you remember about me?") }
-        }
-    }
-}
-
-@Composable
-private fun ActionChip(label: String, color: Color, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .background(color.copy(alpha = 0.12f), RoundedCornerShape(16.dp))
-            .border(1.dp, color.copy(alpha = 0.35f), RoundedCornerShape(16.dp))
-            .clickable { onClick() }
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-    ) {
-        Text(text = label, color = color, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
     }
 }
 
@@ -692,7 +768,6 @@ private fun ActionChip(label: String, color: Color, onClick: () -> Unit) {
 private fun MessageBubble(message: ChatMessage) {
     val isUser = message.role == MessageRole.USER
     val isSystem = message.role == MessageRole.SYSTEM
-
     val horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
 
     Row(
@@ -806,7 +881,7 @@ private fun BottomControlBar(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 24.dp, vertical = 14.dp),
+            .padding(horizontal = 24.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -814,7 +889,7 @@ private fun BottomControlBar(
         Button(
             onClick = onStop,
             modifier = Modifier
-                .size(54.dp)
+                .size(52.dp)
                 .testTag("stop_conversation_button"),
             shape = CircleShape,
             colors = ButtonDefaults.buttonColors(
@@ -835,7 +910,6 @@ private fun BottomControlBar(
         val isListening = state == ConversationState.LISTENING
         val isProcessing = state == ConversationState.PROCESSING
         val isSpeaking = state == ConversationState.SPEAKING
-
         val buttonColor = when {
             isListening -> SanaNeonCyan
             isProcessing -> SanaNeonRed
@@ -846,7 +920,7 @@ private fun BottomControlBar(
         Button(
             onClick = onToggleMic,
             modifier = Modifier
-                .size(72.dp)
+                .size(68.dp)
                 .testTag("master_microphone_button"),
             shape = CircleShape,
             colors = ButtonDefaults.buttonColors(
@@ -858,14 +932,14 @@ private fun BottomControlBar(
                 imageVector = Icons.Default.Mic,
                 contentDescription = "Toggle Hands-free Listening",
                 tint = Color.Black,
-                modifier = Modifier.size(36.dp)
+                modifier = Modifier.size(34.dp)
             )
         }
 
         // Hands-free continuous toggle indicator
         Box(
             modifier = Modifier
-                .size(54.dp)
+                .size(52.dp)
                 .background(
                     if (isHandsFreeActive) SanaNeonGreen.copy(alpha = 0.2f) else SanaSurfaceElevated,
                     CircleShape

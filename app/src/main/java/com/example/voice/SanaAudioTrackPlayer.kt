@@ -30,7 +30,6 @@ class SanaAudioTrackPlayer(
     private val tag = "SanaAudioTrackPlayer"
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
     private var audioFocusRequest: AudioFocusRequest? = null
-
     private var currentAudioTrack: AudioTrack? = null
     private var currentMediaPlayer: MediaPlayer? = null
     private var playbackJob: Job? = null
@@ -48,6 +47,69 @@ class SanaAudioTrackPlayer(
     }
 
     /**
+     * Ensures volume is optimal for spoken voice output and not muted.
+     * Prevents the "Voice output too quiet" issue noted in Section 8.
+     */
+    private fun ensureAdequateVoiceVolume() {
+        val am = audioManager ?: return
+        try {
+            val maxVol = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            val currentVol = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+            // Ensure at least 70% volume for speech audibility
+            val targetMinVol = (maxVol * 0.70f).toInt().coerceAtLeast(1)
+            if (currentVol < targetMinVol) {
+                am.setStreamVolume(AudioManager.STREAM_MUSIC, targetMinVol, 0)
+                Log.d(tag, "Adjusted STREAM_MUSIC volume from $currentVol to $targetMinVol / $maxVol for voice clarity.")
+            }
+        } catch (e: Exception) {
+            Log.w(tag, "Volume check non-fatal exception: ${e.message}")
+        }
+    }
+
+    /**
+     * Normalizes and amplifies 16-bit PCM samples with peak-limiting to prevent clipping.
+     * Guarantees clear, loud physical voice output through device speaker.
+     */
+    private fun boostAndNormalizePcm(rawPcm: ByteArray): ByteArray {
+        if (rawPcm.size < 2) return rawPcm
+        val output = rawPcm.clone()
+        val numSamples = output.size / 2
+        var maxPeak = 0
+
+        // 1. Measure peak amplitude
+        for (i in 0 until numSamples) {
+            val low = output[i * 2].toInt() and 0xFF
+            val high = output[i * 2 + 1].toInt()
+            val sample = (high shl 8) or low
+            val absVal = Math.abs(sample)
+            if (absVal > maxPeak) {
+                maxPeak = absVal
+            }
+        }
+
+        // Target amplitude peak ~28000 out of 32767 for loud, clean, distortion-free output
+        val targetPeak = 28000.0
+        val gain: Double = if (maxPeak > 100) {
+            val calculated = targetPeak / maxPeak.toDouble()
+            calculated.coerceIn(1.2, 3.2) // Controlled gain boost without harsh distortion
+        } else {
+            1.5
+        }
+
+        // 2. Apply digital gain with soft limiting
+        for (i in 0 until numSamples) {
+            val low = output[i * 2].toInt() and 0xFF
+            val high = output[i * 2 + 1].toInt()
+            val sample = (high shl 8) or low
+            val boosted = (sample * gain).toInt().coerceIn(-32767, 32767)
+            output[i * 2] = (boosted and 0xFF).toByte()
+            output[i * 2 + 1] = ((boosted shr 8) and 0xFF).toByte()
+        }
+
+        return output
+    }
+
+    /**
      * Plays PCM audio through the Android device speaker without premature cutoff.
      * Automatically extracts PCM data from WAV RIFF containers if present.
      */
@@ -57,19 +119,14 @@ class SanaAudioTrackPlayer(
             return
         }
 
-        // Stop any active session cleanly first
         stop()
         isInterrupted.set(false)
 
         playbackJob = scope.launch {
             try {
-                // Extract raw PCM payload (strip WAV header if present)
-                val pcmBytes = extractPcmBytes(audioData)
-                if (pcmBytes.isEmpty()) {
-                    onPlaybackFinished()
-                    return@launch
-                }
-
+                ensureAdequateVoiceVolume()
+                val extractedPcm = extractPcmBytes(audioData)
+                val pcmBytes = boostAndNormalizePcm(extractedPcm)
                 requestAudioFocus()
 
                 val minBufferSize = AudioTrack.getMinBufferSize(
@@ -77,7 +134,7 @@ class SanaAudioTrackPlayer(
                     CHANNEL_CONFIG,
                     AUDIO_FORMAT
                 )
-                val bufferSize = maxOf(minBufferSize * 4, 8192)
+                val bufferSize = maxOf(minBufferSize * 2, 4096)
 
                 val audioAttributes = AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -98,6 +155,10 @@ class SanaAudioTrackPlayer(
                     .build()
 
                 currentAudioTrack = track
+                // Set volume to maximum track level for full speaker projection
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    track.setVolume(1.0f)
+                }
 
                 track.play()
                 _isPlaying.value = true
@@ -105,7 +166,6 @@ class SanaAudioTrackPlayer(
 
                 val chunkSize = 2048
                 var offset = 0
-
                 while (offset < pcmBytes.size && !isInterrupted.get()) {
                     val bytesToWrite = minOf(chunkSize, pcmBytes.size - offset)
                     val written = track.write(pcmBytes, offset, bytesToWrite)
@@ -119,14 +179,12 @@ class SanaAudioTrackPlayer(
                 if (!isInterrupted.get()) {
                     // Calculate TRUE audio duration: total bytes / (24000 samples/sec * 2 bytes/sample)
                     val totalDurationMs = ((pcmBytes.size.toDouble() / (SAMPLE_RATE_HZ * BYTES_PER_SAMPLE)) * 1000.0).toLong()
-                    // Allow the complete audio to finish playing through the speaker
                     delay(totalDurationMs + 100L)
                 }
 
                 releaseTrackSafely(track)
                 _isPlaying.value = false
                 abandonAudioFocus()
-
                 if (!isInterrupted.get()) {
                     onPlaybackFinished()
                 }
@@ -153,6 +211,7 @@ class SanaAudioTrackPlayer(
 
         playbackJob = scope.launch {
             try {
+                ensureAdequateVoiceVolume()
                 val tempFile = File.createTempFile("sana_voice_", ".mp3", context.cacheDir)
                 FileOutputStream(tempFile).use { it.write(mp3Data) }
 
@@ -166,10 +225,12 @@ class SanaAudioTrackPlayer(
                             .build()
                     )
                     setDataSource(tempFile.absolutePath)
+                    setVolume(1.0f, 1.0f)
                     prepare()
                 }
 
                 currentMediaPlayer = mp
+
                 mp.setOnCompletionListener {
                     _isPlaying.value = false
                     abandonAudioFocus()
@@ -179,6 +240,7 @@ class SanaAudioTrackPlayer(
                         onPlaybackFinished()
                     }
                 }
+
                 mp.setOnErrorListener { _, what, extra ->
                     Log.w(tag, "MediaPlayer error: $what, $extra")
                     _isPlaying.value = false
@@ -202,7 +264,7 @@ class SanaAudioTrackPlayer(
     }
 
     /**
-     * Extracts raw PCM payload from byte stream, stripping standard 44-byte WAV header if present
+     * Extracts raw PCM payload from byte stream, stripping standard 44-byte WAV header if present.
      */
     private fun extractPcmBytes(data: ByteArray): ByteArray {
         if (data.size > 44 && data[0] == 'R'.code.toByte() && data[1] == 'I'.code.toByte() && data[2] == 'F'.code.toByte() && data[3] == 'F'.code.toByte()) {
@@ -226,7 +288,7 @@ class SanaAudioTrackPlayer(
     }
 
     /**
-     * Instantly halt audio playback on user speech / interruption / STOP
+     * Instantly halt audio playback on user speech / interruption / STOP.
      */
     fun stop() {
         isInterrupted.set(true)
@@ -285,7 +347,6 @@ class SanaAudioTrackPlayer(
                 .setUsage(AudioAttributes.USAGE_MEDIA)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build()
-
             val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
                 .setAudioAttributes(playbackAttributes)
                 .setAcceptsDelayedFocusGain(false)
@@ -296,7 +357,6 @@ class SanaAudioTrackPlayer(
                     }
                 }
                 .build()
-
             audioFocusRequest = focusRequest
             am.requestAudioFocus(focusRequest)
         } else {
