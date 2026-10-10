@@ -1,0 +1,44 @@
+name: Build Android APK
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Bubblewrap CLI (Google TWA)
+        run: npm install -g @bubblewrap/cli
+
+      - name: Build WebAPK Artifact
+        run: |
+          npm ci
+          npm run build
+          # Bubblewrap packages the live PWA into an installable Android APK
+          npx @bubblewrap/cli init --manifest="https://ais-dev-re5lhf632kgh2myv5cxuh7-516063228922.asia-southeast1.run.app/manifest.webmanifest"
+          npx @bubblewrap/cli build
+
+      - name: Upload APK Release
+        uses: actions/upload-artifact@v4
+        with:
+          name: Aliza-Teacher-Release-APK
+          path: '*.apk'
+          
