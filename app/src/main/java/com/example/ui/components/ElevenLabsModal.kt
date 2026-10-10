@@ -54,6 +54,7 @@ import com.example.data.SanaSettingsData
 import com.example.ui.theme.SanaNeonCyan
 import com.example.ui.theme.SanaNeonGreen
 import com.example.ui.theme.SanaNeonPink
+import com.example.ui.theme.SanaNeonRed
 import com.example.ui.theme.SanaSurfaceCard
 import com.example.ui.theme.SanaSurfaceElevated
 import com.example.ui.theme.SanaTextMuted
@@ -66,8 +67,10 @@ data class ModelOption(val id: String, val name: String, val desc: String)
 @Composable
 fun ElevenLabsModal(
     settings: SanaSettingsData,
+    isAudioPlaying: Boolean = false,
     onSaveSettings: (SanaSettingsData) -> Unit,
-    onTestVoice: () -> Unit,
+    onTestVoice: (SanaSettingsData) -> Unit,
+    onStopVoice: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     var voiceProvider by remember { mutableStateOf(settings.voiceProvider) }
@@ -400,16 +403,40 @@ fun ElevenLabsModal(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Test Voice Audition Button
-        OutlinedButton(
-            onClick = onTestVoice,
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.outlinedButtonColors(contentColor = SanaNeonCyan),
-            shape = RoundedCornerShape(10.dp)
-        ) {
-            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(modifier = Modifier.width(6.dp))
-            Text("Test Voice Audition (صدا کی آزمائش)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        // Test Voice Audition / STOP Button
+        if (isAudioPlaying) {
+            Button(
+                onClick = onStopVoice,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = SanaNeonRed),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Icon(Icons.Default.Close, contentDescription = "Stop", modifier = Modifier.size(18.dp), tint = Color.White)
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Stop Voice Playback (آواز روکیں)", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
+            }
+        } else {
+            OutlinedButton(
+                onClick = {
+                    val currentModalSettings = settings.copy(
+                        voiceProvider = voiceProvider,
+                        elevenLabsModelId = selectedModel,
+                        elevenLabsVoiceId = selectedVoice,
+                        elevenLabsApiKey = apiKey,
+                        elevenLabsStability = stability,
+                        elevenLabsSimilarity = similarityBoost,
+                        elevenLabsOutputFormat = outputFormat
+                    )
+                    onTestVoice(currentModalSettings)
+                },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = SanaNeonCyan),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Test Voice Audition (صدا کی آزمائش)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
         }
 
         Spacer(modifier = Modifier.height(10.dp))

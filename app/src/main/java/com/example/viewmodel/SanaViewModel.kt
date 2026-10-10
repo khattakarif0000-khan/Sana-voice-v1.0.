@@ -31,6 +31,7 @@ import com.example.phone.AntiTheftManager
 import com.example.phone.AntiTheftSensitivity
 import com.example.phone.PhoneControlManager
 import com.example.voice.ElevenLabsClient
+import com.example.voice.ElevenLabsResponse
 import com.example.voice.SanaAudioTrackPlayer
 import com.example.voice.SanaSpeechRecognizer
 import kotlinx.coroutines.Dispatchers
@@ -93,6 +94,9 @@ class SanaViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _audioWaveLevel = MutableStateFlow(0f)
     val audioWaveLevel: StateFlow<Float> = _audioWaveLevel.asStateFlow()
+
+    private val _isAudioPlaying = MutableStateFlow(false)
+    val isAudioPlaying: StateFlow<Boolean> = _isAudioPlaying.asStateFlow()
 
     // Truthful Diagnostic Status
     private val _diagnosticStatus = MutableStateFlow(DiagnosticStatus())
@@ -190,13 +194,16 @@ class SanaViewModel(application: Application) : AndroidViewModel(application) {
             audioTrackPlayer = SanaAudioTrackPlayer(
                 context = getApplication(),
                 onPlaybackStarted = {
+                    _isAudioPlaying.value = true
                     _conversationState.value = ConversationState.SPEAKING
                 },
                 onPlaybackFinished = {
+                    _isAudioPlaying.value = false
                     handleAudioFinished()
                 },
                 onPlaybackError = { errorMsg ->
                     Log.w(tag, "Audio playback error: $errorMsg")
+                    _isAudioPlaying.value = false
                     _diagnosticStatus.value = _diagnosticStatus.value.copy(
                         lastError = errorMsg,
                         activeNotice = DiagnosticNotice(
@@ -503,22 +510,26 @@ class SanaViewModel(application: Application) : AndroidViewModel(application) {
                     voiceId = settings.value.elevenLabsVoiceId,
                     modelId = settings.value.elevenLabsModelId,
                     stability = settings.value.elevenLabsStability,
-                    similarity = settings.value.elevenLabsSimilarity
+                    similarity = settings.value.elevenLabsSimilarity,
+                    outputFormat = settings.value.elevenLabsOutputFormat
                 )
 
-                if (elevenResult != null) {
-                    _diagnosticStatus.value = _diagnosticStatus.value.copy(
-                        elevenLabsLevel = DiagnosticLevel.VERIFIED_OPERATIONAL,
-                        elevenLabsStatus = "Connected & Active (${elevenResult.latencyMs}ms, ${elevenResult.modelId})"
-                    )
-                    deliverSanaReply(text, emotion, actionResult, elevenResult.audioBytes, isMp3 = true)
-                    return@launch
-                } else {
-                    Log.w(tag, "ElevenLabs call returned null. Executing seamless fallback to Gemini Native voice.")
-                    _diagnosticStatus.value = _diagnosticStatus.value.copy(
-                        elevenLabsLevel = DiagnosticLevel.CONFIGURED_UNVERIFIED,
-                        elevenLabsStatus = "Fallback to Gemini Native Active"
-                    )
+                when (elevenResult) {
+                    is ElevenLabsResponse.Success -> {
+                        _diagnosticStatus.value = _diagnosticStatus.value.copy(
+                            elevenLabsLevel = DiagnosticLevel.VERIFIED_OPERATIONAL,
+                            elevenLabsStatus = "Connected & Active (${elevenResult.latencyMs}ms, ${elevenResult.modelId})"
+                        )
+                        deliverSanaReply(text, emotion, actionResult, elevenResult.audioBytes, isMp3 = !elevenResult.format.contains("pcm"))
+                        return@launch
+                    }
+                    is ElevenLabsResponse.Error -> {
+                        Log.w(tag, "ElevenLabs call returned error: ${elevenResult.errorCategory} - ${elevenResult.message}. Executing seamless fallback to Gemini Native voice.")
+                        _diagnosticStatus.value = _diagnosticStatus.value.copy(
+                            elevenLabsLevel = DiagnosticLevel.CONFIGURED_UNVERIFIED,
+                            elevenLabsStatus = "Fallback to Gemini Native Active (${elevenResult.errorCategory})"
+                        )
+                    }
                 }
             }
 
@@ -775,32 +786,92 @@ class SanaViewModel(application: Application) : AndroidViewModel(application) {
         updateDiagnostics()
     }
 
-    fun testVoiceAudition() {
-        val apiKey = geminiClient.getEffectiveApiKey(settings.value.customApiKey)
-        val elevenApiKey = elevenLabsClient.getEffectiveApiKey(settings.value.elevenLabsApiKey)
+    fun stopVoicePlayback() {
+        audioTrackPlayer?.stop()
+        _isAudioPlaying.value = false
+        _conversationState.value = ConversationState.IDLE
+    }
+
+    fun testVoiceAudition(customSettings: SanaSettingsData? = null) {
+        val activeSettings = customSettings ?: settings.value
+        val apiKey = geminiClient.getEffectiveApiKey(activeSettings.customApiKey)
+        val elevenApiKey = elevenLabsClient.getEffectiveApiKey(activeSettings.elevenLabsApiKey)
+
+        // Check device volume without modifying system volume
+        val volCheck = audioTrackPlayer?.checkAudioVolume()
+        if (volCheck != null && (volCheck.isMuted || volCheck.currentVolume == 0)) {
+            _diagnosticStatus.value = _diagnosticStatus.value.copy(
+                activeNotice = DiagnosticNotice(
+                    category = "Audio Output Warning",
+                    message = "Device media volume is muted or at zero (${volCheck.currentVolume}/${volCheck.maxVolume}).",
+                    recoveryAction = "Please increase device media volume to hear SANA's preview voice."
+                )
+            )
+        }
 
         viewModelScope.launch {
             val sampleText = "السلام علیکم! میں ثناء ہوں۔ میری آواز اس طرح سنائی دے گی۔"
-            if (settings.value.voiceProvider == "ELEVEN_LABS" && elevenApiKey.isNotBlank()) {
-                val result = elevenLabsClient.generateSpeechAudio(
-                    text = sampleText,
-                    apiKey = elevenApiKey,
-                    voiceId = settings.value.elevenLabsVoiceId,
-                    modelId = settings.value.elevenLabsModelId,
-                    stability = settings.value.elevenLabsStability,
-                    similarity = settings.value.elevenLabsSimilarity
-                )
-                if (result != null) {
-                    audioTrackPlayer?.playMp3Audio(result.audioBytes)
+
+            // Dedicated ElevenLabs Test
+            if (activeSettings.voiceProvider == "ELEVEN_LABS") {
+                if (elevenApiKey.isBlank()) {
                     _diagnosticStatus.value = _diagnosticStatus.value.copy(
-                        elevenLabsLevel = DiagnosticLevel.VERIFIED_OPERATIONAL,
-                        elevenLabsStatus = "Connected & Verified (${result.latencyMs}ms)"
+                        elevenLabsLevel = DiagnosticLevel.NOT_TESTED_INACTIVE,
+                        elevenLabsStatus = "ELEVENLABS NOT CONFIGURED: API key missing",
+                        lastError = "ElevenLabs API Key is not configured.",
+                        activeNotice = DiagnosticNotice(
+                            category = "ElevenLabs Configuration",
+                            message = "ElevenLabs API Key is not configured.",
+                            recoveryAction = "Enter your ElevenLabs API Key in Settings or the Voice Configuration modal."
+                        )
                     )
                     return@launch
                 }
+
+                // Cleanly stop any existing playback before preview
+                audioTrackPlayer?.stop()
+
+                val result = elevenLabsClient.generateSpeechAudio(
+                    text = sampleText,
+                    apiKey = elevenApiKey,
+                    voiceId = activeSettings.elevenLabsVoiceId,
+                    modelId = activeSettings.elevenLabsModelId,
+                    stability = activeSettings.elevenLabsStability,
+                    similarity = activeSettings.elevenLabsSimilarity,
+                    outputFormat = activeSettings.elevenLabsOutputFormat
+                )
+
+                when (result) {
+                    is ElevenLabsResponse.Success -> {
+                        _diagnosticStatus.value = _diagnosticStatus.value.copy(
+                            elevenLabsLevel = DiagnosticLevel.VERIFIED_OPERATIONAL,
+                            elevenLabsStatus = "Connected & Verified (${result.latencyMs}ms, ${result.modelId})",
+                            activeNotice = null,
+                            lastError = null
+                        )
+                        audioTrackPlayer?.playAudioBytes(result.audioBytes, result.format)
+                        return@launch
+                    }
+                    is ElevenLabsResponse.Error -> {
+                        _diagnosticStatus.value = _diagnosticStatus.value.copy(
+                            elevenLabsLevel = DiagnosticLevel.UNAVAILABLE_FAILED,
+                            elevenLabsStatus = "Failed: ${result.errorCategory} (HTTP ${result.httpCode})",
+                            lastError = result.message,
+                            activeNotice = DiagnosticNotice(
+                                category = result.errorCategory,
+                                message = result.message,
+                                recoveryAction = result.recoveryAction
+                            )
+                        )
+                        // Do NOT mask the ElevenLabs error during a dedicated test
+                        return@launch
+                    }
+                }
             }
 
+            // Gemini Native Voice Preview
             if (apiKey.isNotBlank()) {
+                audioTrackPlayer?.stop()
                 val audio = geminiClient.generateGeminiSpeechAudio(sampleText, apiKey)
                 if (audio != null) {
                     audioTrackPlayer?.playPcmAudio(audio)
@@ -809,7 +880,12 @@ class SanaViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             _diagnosticStatus.value = _diagnosticStatus.value.copy(
-                lastError = "API key is required to hear SANA's voice."
+                lastError = "API key is required to hear SANA's voice.",
+                activeNotice = DiagnosticNotice(
+                    category = "Voice Engine",
+                    message = "No operational voice credentials available for preview.",
+                    recoveryAction = "Configure either Gemini API Key or ElevenLabs API Key in Settings."
+                )
             )
         }
     }

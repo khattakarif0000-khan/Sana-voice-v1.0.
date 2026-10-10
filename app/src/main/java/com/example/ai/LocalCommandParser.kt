@@ -83,7 +83,6 @@ object LocalCommandParser {
         }
 
         // 6. YouTube Search & Playback (Section 12)
-        // e.g. "YouTube par koi gana chalao", "YouTube par Atif Aslam ka gana chalao"
         if (lower.contains("youtube") || lower.contains("یوٹیوب")) {
             val query = lower
                 .replace("youtube", "")
@@ -172,21 +171,22 @@ object LocalCommandParser {
             )
         }
 
-        // 10. Anti-Theft Arm / Disarm
-        if (lower.contains("arm anti-theft") || lower.contains("arm anti theft") || lower.contains("chori se bachao on") || lower.contains("چوری سے بچاؤ آن")) {
-            return LocalParsedCommand(
-                matched = true,
-                command = "ARM_ANTI_THEFT",
-                spokenResponse = "اینٹی تھیفٹ پروٹیکشن فعال کر دی گئی ہے۔ فون ہلانے پر وارننگ ملے گی۔",
-                emotion = EmotionType.HAPPY
-            )
-        }
+        // 10. Anti-Theft Disarm checked BEFORE Arm to prevent substring false-match
         if (lower.contains("disarm anti-theft") || lower.contains("disarm anti theft") || lower.contains("chori se bachao band") || lower.contains("چوری سے بچاؤ بند")) {
             return LocalParsedCommand(
                 matched = true,
                 command = "DISARM_ANTI_THEFT",
                 spokenResponse = "اینٹی تھیفٹ پروٹیکشن غیر فعال کر دی گئی ہے۔",
                 emotion = EmotionType.NEUTRAL
+            )
+        }
+
+        if (lower.contains("arm anti-theft") || lower.contains("arm anti theft") || lower.contains("chori se bachao on") || lower.contains("چوری سے بچاؤ آن")) {
+            return LocalParsedCommand(
+                matched = true,
+                command = "ARM_ANTI_THEFT",
+                spokenResponse = "اینٹی تھیفٹ پروٹیکشن فعال کر دی گئی ہے۔ فون ہلانے پر وارننگ ملے گی۔",
+                emotion = EmotionType.HAPPY
             )
         }
 

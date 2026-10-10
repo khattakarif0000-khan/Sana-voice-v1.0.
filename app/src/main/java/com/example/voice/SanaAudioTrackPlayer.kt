@@ -18,8 +18,16 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
+
+data class VolumeCheckResult(
+    val isMuted: Boolean,
+    val currentVolume: Int,
+    val maxVolume: Int,
+    val warningMessage: String?
+)
 
 class SanaAudioTrackPlayer(
     private val context: Context,
@@ -47,22 +55,28 @@ class SanaAudioTrackPlayer(
     }
 
     /**
-     * Ensures volume is optimal for spoken voice output and not muted.
-     * Prevents the "Voice output too quiet" issue noted in Section 8.
+     * Checks audio volume and mute status without modifying user's system settings.
+     * Reports warnings if device is muted or volume is zero.
      */
-    private fun ensureAdequateVoiceVolume() {
-        val am = audioManager ?: return
-        try {
-            val maxVol = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-            val currentVol = am.getStreamVolume(AudioManager.STREAM_MUSIC)
-            // Ensure at least 70% volume for speech audibility
-            val targetMinVol = (maxVol * 0.70f).toInt().coerceAtLeast(1)
-            if (currentVol < targetMinVol) {
-                am.setStreamVolume(AudioManager.STREAM_MUSIC, targetMinVol, 0)
-                Log.d(tag, "Adjusted STREAM_MUSIC volume from $currentVol to $targetMinVol / $maxVol for voice clarity.")
-            }
-        } catch (e: Exception) {
-            Log.w(tag, "Volume check non-fatal exception: ${e.message}")
+    fun checkAudioVolume(): VolumeCheckResult {
+        val am = audioManager ?: return VolumeCheckResult(false, 1, 1, null)
+        val cur = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+        val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        val muted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            am.isStreamMute(AudioManager.STREAM_MUSIC) || cur == 0
+        } else {
+            cur == 0
+        }
+        val warning = if (muted || cur == 0) {
+            "Device media volume is muted or at zero ($cur/$max). Increase media volume to hear voice output."
+        } else null
+        return VolumeCheckResult(muted, cur, max, warning)
+    }
+
+    private fun logVolumeNotice() {
+        val vol = checkAudioVolume()
+        if (vol.warningMessage != null) {
+            Log.w(tag, vol.warningMessage)
         }
     }
 
@@ -124,7 +138,7 @@ class SanaAudioTrackPlayer(
 
         playbackJob = scope.launch {
             try {
-                ensureAdequateVoiceVolume()
+                logVolumeNotice()
                 val extractedPcm = extractPcmBytes(audioData)
                 val pcmBytes = boostAndNormalizePcm(extractedPcm)
                 requestAudioFocus()
@@ -199,6 +213,7 @@ class SanaAudioTrackPlayer(
 
     /**
      * Plays MP3 audio (e.g. from ElevenLabs premium voice) through standard Android MediaPlayer.
+     * Uses open FileDescriptor so mediaserver in another UID can access private cache audio cleanly.
      */
     fun playMp3Audio(mp3Data: ByteArray) {
         if (mp3Data.isEmpty()) {
@@ -210,12 +225,18 @@ class SanaAudioTrackPlayer(
         isInterrupted.set(false)
 
         playbackJob = scope.launch {
+            var fileInputStream: FileInputStream? = null
+            var tempFile: File? = null
             try {
-                ensureAdequateVoiceVolume()
-                val tempFile = File.createTempFile("sana_voice_", ".mp3", context.cacheDir)
-                FileOutputStream(tempFile).use { it.write(mp3Data) }
+                logVolumeNotice()
+                val createdFile = File.createTempFile("sana_voice_", ".mp3", context.cacheDir)
+                tempFile = createdFile
+                FileOutputStream(createdFile).use { it.write(mp3Data) }
 
                 requestAudioFocus()
+
+                val fis = FileInputStream(createdFile)
+                fileInputStream = fis
 
                 val mp = MediaPlayer().apply {
                     setAudioAttributes(
@@ -224,7 +245,8 @@ class SanaAudioTrackPlayer(
                             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                             .build()
                     )
-                    setDataSource(tempFile.absolutePath)
+                    // Pass open FileDescriptor across Binder so mediaserver process has read access
+                    setDataSource(fis.fd, 0, createdFile.length())
                     setVolume(1.0f, 1.0f)
                     prepare()
                 }
@@ -234,8 +256,9 @@ class SanaAudioTrackPlayer(
                 mp.setOnCompletionListener {
                     _isPlaying.value = false
                     abandonAudioFocus()
+                    try { fileInputStream?.close() } catch (ignored: Throwable) {}
                     releaseMediaPlayerSafely(mp)
-                    tempFile.delete()
+                    try { tempFile?.delete() } catch (ignored: Throwable) {}
                     if (!isInterrupted.get()) {
                         onPlaybackFinished()
                     }
@@ -245,9 +268,10 @@ class SanaAudioTrackPlayer(
                     Log.w(tag, "MediaPlayer error: $what, $extra")
                     _isPlaying.value = false
                     abandonAudioFocus()
+                    try { fileInputStream?.close() } catch (ignored: Throwable) {}
                     releaseMediaPlayerSafely(mp)
-                    tempFile.delete()
-                    onPlaybackError("MediaPlayer error: $what")
+                    try { tempFile?.delete() } catch (ignored: Throwable) {}
+                    onPlaybackError("MediaPlayer playback error ($what, $extra)")
                     true
                 }
 
@@ -256,10 +280,24 @@ class SanaAudioTrackPlayer(
                 onPlaybackStarted()
             } catch (e: Exception) {
                 Log.e(tag, "MP3 playback exception", e)
+                try { fileInputStream?.close() } catch (ignored: Throwable) {}
+                try { tempFile?.delete() } catch (ignored: Throwable) {}
                 _isPlaying.value = false
                 abandonAudioFocus()
                 onPlaybackError(e.localizedMessage ?: "MP3 playback failed")
             }
+        }
+    }
+
+    /**
+     * Universal audio player helper supporting both PCM (24kHz direct or WAV container)
+     * and MP3 formats seamlessly.
+     */
+    fun playAudioBytes(audioData: ByteArray, format: String = "audio/mpeg") {
+        if (format.contains("pcm") || (audioData.size > 4 && audioData[0] == 'R'.code.toByte() && audioData[1] == 'I'.code.toByte())) {
+            playPcmAudio(audioData)
+        } else {
+            playMp3Audio(audioData)
         }
     }
 

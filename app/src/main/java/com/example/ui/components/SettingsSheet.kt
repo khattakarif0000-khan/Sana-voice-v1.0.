@@ -53,6 +53,7 @@ import com.example.data.SanaSettingsData
 import com.example.ui.theme.SanaNeonCyan
 import com.example.ui.theme.SanaNeonGreen
 import com.example.ui.theme.SanaNeonPink
+import com.example.ui.theme.SanaNeonRed
 import com.example.ui.theme.SanaSurfaceCard
 import com.example.ui.theme.SanaSurfaceElevated
 import com.example.ui.theme.SanaTextMuted
@@ -62,8 +63,10 @@ import com.example.ui.theme.SanaTextSecondary
 fun SettingsSheet(
     settings: SanaSettingsData,
     isAiConnected: Boolean,
+    isAudioPlaying: Boolean = false,
     onSaveSettings: (SanaSettingsData) -> Unit,
-    onTestVoice: () -> Unit,
+    onTestVoice: (SanaSettingsData) -> Unit,
+    onStopVoice: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     var languageMode by remember { mutableStateOf(settings.languageMode) }
@@ -355,16 +358,45 @@ fun SettingsSheet(
 
         Spacer(modifier = Modifier.height(14.dp))
 
-        // 4. Voice Audition Button
-        OutlinedButton(
-            onClick = onTestVoice,
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.outlinedButtonColors(contentColor = SanaNeonCyan),
-            shape = RoundedCornerShape(10.dp)
-        ) {
-            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(modifier = Modifier.width(6.dp))
-            Text("Test Voice Audition", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        // 4. Voice Audition / STOP Button
+        if (isAudioPlaying) {
+            Button(
+                onClick = onStopVoice,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = SanaNeonRed),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Icon(Icons.Default.Close, contentDescription = "Stop", modifier = Modifier.size(18.dp), tint = Color.White)
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Stop Voice Playback", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
+            }
+        } else {
+            OutlinedButton(
+                onClick = {
+                    val currentSettings = settings.copy(
+                        languageMode = languageMode,
+                        loveModeEnabled = loveModeEnabled,
+                        jealousyLevel = jealousyLevel,
+                        ttsSpeed = ttsSpeed,
+                        ttsPitch = ttsPitch,
+                        customApiKey = customApiKey,
+                        confirmSensitiveActions = confirmSensitive,
+                        antiTheftEnabled = antiTheftEnabled,
+                        voiceProvider = voiceProvider,
+                        elevenLabsApiKey = elevenLabsApiKey,
+                        elevenLabsVoiceId = elevenLabsVoiceId,
+                        elevenLabsModelId = elevenLabsModelId
+                    )
+                    onTestVoice(currentSettings)
+                },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = SanaNeonCyan),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Test Voice Audition", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
         }
 
         Spacer(modifier = Modifier.height(14.dp))

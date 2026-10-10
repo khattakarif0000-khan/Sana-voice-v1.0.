@@ -145,6 +145,7 @@ fun SanaScreen(
     val socialDraft by viewModel.socialDraft.collectAsState()
     val isHandsFree by viewModel.isHandsFreeActive.collectAsState()
     val audioWaveLevel by viewModel.audioWaveLevel.collectAsState()
+    val isAudioPlaying by viewModel.isAudioPlaying.collectAsState()
 
     var activeSheet by remember { mutableStateOf(ActiveSheet.NONE) }
     var typedText by remember { mutableStateOf("") }
@@ -450,8 +451,10 @@ fun SanaScreen(
 
                 ActiveSheet.VOICE_SETTINGS -> ElevenLabsModal(
                     settings = settings,
+                    isAudioPlaying = isAudioPlaying,
                     onSaveSettings = { viewModel.updateSettings(it) },
-                    onTestVoice = { viewModel.testVoiceAudition() },
+                    onTestVoice = { viewModel.testVoiceAudition(it) },
+                    onStopVoice = { viewModel.stopVoicePlayback() },
                     onDismiss = { activeSheet = ActiveSheet.NONE }
                 )
 
@@ -473,8 +476,10 @@ fun SanaScreen(
                 ActiveSheet.SETTINGS -> SettingsSheet(
                     settings = settings,
                     isAiConnected = diagnosticStatus.aiConfigured,
+                    isAudioPlaying = isAudioPlaying,
                     onSaveSettings = { viewModel.updateSettings(it) },
-                    onTestVoice = { viewModel.testVoiceAudition() },
+                    onTestVoice = { viewModel.testVoiceAudition(it) },
+                    onStopVoice = { viewModel.stopVoicePlayback() },
                     onDismiss = { activeSheet = ActiveSheet.NONE }
                 )
 
